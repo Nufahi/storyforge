@@ -15,15 +15,14 @@
     mask-position: center;
 }
 
-/* StoryForge v3.2 */
+/* StoryForge v3.3 */
 
 #storyforge_menu_btn .fa-fw { margin-right: 5px; }
 
+/* === Popup wrapper === */
 .storyforge-popup {
     font-size: 14px;
     color: var(--SmartThemeBodyColor, #ccc);
-    max-height: 70vh;
-    overflow-y: auto;
     padding-right: 4px;
 }
 .storyforge-popup::-webkit-scrollbar { width: 5px; }
@@ -49,6 +48,7 @@
     gap: 8px;
     margin-bottom: 16px;
 }
+
 .storyforge-tool-btn {
     display: flex;
     align-items: center;
@@ -86,7 +86,7 @@
 .storyforge-tool-btn.storyforge-active .storyforge-tool-icon { color: #5cb85c; }
 .storyforge-tool-btn .storyforge-tool-label { font-weight: 500; flex: 1; }
 
-/* Delete × in top-right corner — visible on hover */
+/* === Delete x — desktop only (hover devices) === */
 .storyforge-tool-delete {
     position: absolute;
     top: 4px;
@@ -98,9 +98,35 @@
     transition: opacity .15s, color .15s;
     padding: 2px;
     z-index: 2;
+    pointer-events: none;
 }
-.storyforge-tool-btn:hover .storyforge-tool-delete { opacity: .6; }
-.storyforge-tool-delete:hover { opacity: 1 !important; color: #ff6b6b !important; }
+
+@media (hover: hover) {
+    .storyforge-tool-btn:hover .storyforge-tool-delete {
+        opacity: .6;
+        pointer-events: auto;
+    }
+    .storyforge-tool-delete:hover {
+        opacity: 1 !important;
+        color: #ff6b6b !important;
+    }
+}
+
+/* === Touch devices === */
+@media (hover: none) {
+    .storyforge-tool-btn.storyforge-active .storyforge-tool-delete {
+        opacity: .5;
+        pointer-events: auto;
+    }
+}
+
+/* === Mobile: 1 column grid === */
+@media (max-width: 600px) {
+    .storyforge-grid {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+}
 
 /* === Add tool === */
 .storyforge-add-btn {
