@@ -1,45 +1,102 @@
 # StoryForge
 
-StoryForge is a SillyTavern extension that adds a compact storytelling toolkit to the Extensions menu. It lets you inject narrative instructions into the next AI reply with one click, so you can push roleplay scenes in a specific direction without manually typing meta-prompts every time.
+One-click narrative tools for SillyTavern roleplay.
+
+Plot twists, new NPCs, random events, scene shifts queue any story tool before the next AI response with a single click.
+
+---
 
 ## Features
 
-StoryForge includes built-in story tools such as Plot Twist, New NPC, NPC Action, Random Event, Secret Reveal, Scene Shift, Time Skip, and Raise Stakes. Each tool injects a dedicated prompt into the current chat context before generation.
+8 built-in tools — each injects a specialized prompt into chat context before generation:
 
-All prompts are editable inside the popup panel. You can change prompt text directly in the Custom Prompts section, create your own tools, rename tools inline, and delete tools from the tool grid.
+| Tool | What it does |
+|------|-------------|
+| Plot Twist | Sudden unexpected turn that changes the scene's direction |
+| New NPC | Brand-new character with name, appearance, personality and secret motive |
+| NPC Action | An existing NPC takes a dramatic, potentially unexpected action |
+| Random Event | Disruptive event — ambush, discovery, explosion, uninvited guest |
+| Secret Reveal | Hidden secret about a character, location, or the world |
+| Scene Shift | Transition to a completely new location with vivid description |
+| Time Skip | Jump forward in time, summarizing what happened |
+| Raise Stakes | Escalate danger — urgent threats, deadlines, devastating losses |
 
-The extension also supports active injection tracking, auto-clear after generation, configurable injection depth, and slash commands for opening the panel or clearing all queued prompts.
+Full customization:
 
-## Built-in tools
+- Edit any tool's prompt text directly in the panel
+- Create your own custom tools with any injection prompt
+- Rename tools inline — click the name, type, done
+- Delete any tool — hover and click x
+- Reset to defaults with one button
 
-- **Plot Twist** — introduces a sudden and dramatic change in the current scene. 
-- **New NPC** — adds a new NPC with a name, personality, appearance, and hidden motive.
-- **NPC Action** — makes an existing NPC do something significant or disruptive. 
-- **Random Event** — injects an unexpected event such as an ambush, explosion, alarm, or strange discovery. 
-- **Secret Reveal** — reveals a hidden truth about a character, location, or the world. 
-- **Scene Shift** — moves the story into a new location or setting. 
-- **Time Skip** — jumps forward in time and summarizes what happened in between.
-- **Raise Stakes** — increases danger, urgency, or consequences. 
+Smart injection system:
+
+- Toggle tools on/off (click to activate, click again to deactivate)
+- One-shot mode — auto-clears after AI responds
+- Adjustable injection depth (0-10)
+- Floating badge shows active tools
+- Slash commands: /storyforge, /sf-clear
+
+---
 
 ## Installation
 
-Clone or copy this extension into your SillyTavern third-party extensions folder, then reload SillyTavern. After that, open the Extensions menu and click **StoryForge** to open the panel. 
+### SillyTavern built-in installer (recommended)
+
+1. Open SillyTavern
+2. Go to Extensions > Install Extension
+3. Paste the URL:
+```
+https://github.com/Nufahi/storyforge
+```
+
+4. Click Install, then refresh with Ctrl+Shift+R
+
+### Manual
+
+```bash
+cd SillyTavern/data/default-user/extensions
+git clone https://github.com/Nufahi/storyforge.git
+```
+
+Then restart SillyTavern or press Ctrl+Shift+R.
+
+---
 
 ## Usage
 
-Click any tool in the panel to queue its prompt for the next generation. Click it again to remove it. If auto-clear is enabled, queued injections are cleared automatically after generation ends or is stopped. 
+1. Click the puzzle icon in the top bar > StoryForge
+2. Click any tool to queue it (turns green)
+3. Send your message — the AI weaves in the tool's instruction
+4. With auto-clear ON, the injection disappears after one use
 
-In the Custom Prompts section, you can edit the full prompt text for every tool. Tool names can also be renamed inline, making it easier to adapt the panel to your own workflow or language. 
+Stack tools — activate multiple at once. Queue Scene Shift + New NPC to move locations and introduce a character in one response.
 
-## Slash commands
+Custom tools — click "+ New tool" and write anything. Examples: Flashback, Plot Armor Off, Lore Drop.
 
-- `/storyforge` — opens the StoryForge panel.
-- `/sf-clear` — clears all active StoryForge injections.
+---
 
-## Notes
+## Settings
 
-StoryForge uses the modern `SillyTavern.getContext()` API, popup dialogs, extension settings, and extension prompt injection patterns described in the SillyTavern extension development reference.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Enabled | On | Master toggle |
+| Injection Depth | 1 | Position in chat context (0 = last message) |
+| Auto-clear | On | Remove injections after generation (one-shot) |
+
+---
+
+## Slash Commands
+
+| Command | Action |
+|---------|--------|
+| /storyforge | Open StoryForge panel |
+| /sf-clear | Clear all active injections |
+
+---
 
 ## License
 
 MIT
+
+---
