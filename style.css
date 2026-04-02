@@ -1,0 +1,279 @@
+/* === Menu icon === */
+.storyforge-icon::before {
+    content: "" !important;
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    background-color: currentColor;
+    -webkit-mask-image: url('data:image/png;base64,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');
+    -webkit-mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-image: url('data:image/png;base64,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');
+    mask-size: contain;
+    mask-repeat: no-repeat;
+    mask-position: center;
+}
+
+/* StoryForge v3.2 */
+
+#storyforge_menu_btn .fa-fw { margin-right: 5px; }
+
+.storyforge-popup {
+    font-size: 14px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    max-height: 70vh;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+.storyforge-popup::-webkit-scrollbar { width: 5px; }
+.storyforge-popup::-webkit-scrollbar-track { background: transparent; }
+.storyforge-popup::-webkit-scrollbar-thumb { background: var(--SmartThemeBorderColor, #555); border-radius: 4px; }
+.storyforge-popup::-webkit-scrollbar-thumb:hover { background: var(--SmartThemeQuoteColor, #888); }
+.storyforge-popup h3 {
+    margin: 0 0 4px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--SmartThemeQuoteColor, #999);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.storyforge-popup h3 i { font-size: 12px; }
+
+/* === Tool grid === */
+.storyforge-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.storyforge-tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    transition: all .15s ease;
+    font-size: 13px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    user-select: none;
+    position: relative;
+}
+.storyforge-tool-btn:hover {
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.12));
+    border-color: var(--SmartThemeQuoteColor, #888);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+}
+.storyforge-tool-btn:active { transform: translateY(0); box-shadow: none; }
+.storyforge-tool-btn.storyforge-active {
+    border-color: #5cb85c;
+    background: rgba(92,184,92,.12);
+}
+.storyforge-tool-btn .storyforge-tool-icon {
+    font-size: 15px;
+    width: 22px;
+    text-align: center;
+    flex-shrink: 0;
+    color: var(--SmartThemeQuoteColor, #aaa);
+}
+.storyforge-tool-btn:hover .storyforge-tool-icon { color: var(--SmartThemeBodyColor, #ccc); }
+.storyforge-tool-btn.storyforge-active .storyforge-tool-icon { color: #5cb85c; }
+.storyforge-tool-btn .storyforge-tool-label { font-weight: 500; flex: 1; }
+
+/* Delete × in top-right corner — visible on hover */
+.storyforge-tool-delete {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    font-size: 10px;
+    opacity: 0;
+    color: var(--SmartThemeQuoteColor, #888);
+    cursor: pointer;
+    transition: opacity .15s, color .15s;
+    padding: 2px;
+    z-index: 2;
+}
+.storyforge-tool-btn:hover .storyforge-tool-delete { opacity: .6; }
+.storyforge-tool-delete:hover { opacity: 1 !important; color: #ff6b6b !important; }
+
+/* === Add tool === */
+.storyforge-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    background: transparent;
+    border: 1px dashed var(--SmartThemeBorderColor, #555);
+    font-size: 13px;
+    color: var(--SmartThemeQuoteColor, #888);
+    transition: all .15s ease;
+    user-select: none;
+}
+.storyforge-add-btn:hover {
+    border-color: var(--SmartThemeQuoteColor, #aaa);
+    color: var(--SmartThemeBodyColor, #ccc);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+}
+
+/* === Sections === */
+.storyforge-section { margin-top: 14px; border-top: 1px solid var(--SmartThemeBorderColor, #444); padding-top: 12px; }
+.storyforge-section-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; user-select: none; padding: 4px 0;
+}
+.storyforge-section-toggle h3 { margin: 0; pointer-events: none; }
+.storyforge-section-toggle .fa-chevron-down { transition: transform .2s ease; font-size: 11px; color: var(--SmartThemeQuoteColor, #888); }
+.storyforge-section-toggle.open .fa-chevron-down { transform: rotate(180deg); }
+.storyforge-section-body { display: none; margin-top: 10px; }
+.storyforge-section-body.open { display: block; }
+
+/* === Prompt editors === */
+.storyforge-prompt-item { margin-bottom: 10px; }
+.sf-prompt-label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; margin-bottom: 3px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    cursor: pointer; padding: 3px 6px; border-radius: 5px;
+    transition: background .15s;
+    position: relative;
+}
+.sf-prompt-label:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06)); }
+.sf-prompt-label i:first-child { width: 16px; text-align: center; color: var(--SmartThemeQuoteColor, #999); font-size: 12px; flex-shrink: 0; }
+.sf-rename-hint {
+    font-size: 9px; opacity: 0; color: var(--SmartThemeQuoteColor, #777);
+    margin-left: 4px; transition: opacity .15s;
+}
+.sf-prompt-label:hover .sf-rename-hint { opacity: .5; }
+.sf-rename-input {
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.08));
+    border: 1px solid var(--SmartThemeQuoteColor, #888);
+    border-radius: 4px; padding: 2px 6px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 12px; font-weight: 600; font-family: inherit;
+    outline: none; flex: 1; min-width: 0;
+}
+.storyforge-prompt-item textarea {
+    width: 100%;
+    min-height: 70px;
+    resize: vertical;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-family: inherit;
+    line-height: 1.5;
+}
+.storyforge-prompt-item textarea:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+
+/* === Settings === */
+.storyforge-settings-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px; font-size: 13px;
+}
+.storyforge-settings-row input[type="number"] {
+    width: 55px; padding: 3px 6px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-size: 13px;
+}
+.storyforge-settings-row label { cursor: pointer; }
+.sf-reset-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 6px; font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc); transition: all .15s;
+}
+.sf-reset-btn:hover { background: rgba(255,107,107,.12); border-color: rgba(255,107,107,.4); color: #ff6b6b; }
+
+/* === New tool form === */
+.storyforge-new-tool-form {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 12px; border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    margin-bottom: 16px; animation: sf-fadeIn .2s ease;
+}
+.storyforge-new-tool-form input[type="text"] {
+    padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-size: 13px; font-family: inherit;
+}
+.storyforge-new-tool-form input[type="text"]:focus,
+.storyforge-new-tool-form textarea:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.storyforge-new-tool-form textarea {
+    width: 100%; min-height: 65px; resize: vertical;
+    font-size: 12px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.storyforge-new-tool-form .sf-form-row { display: flex; gap: 8px; justify-content: flex-end; }
+.storyforge-new-tool-form .sf-form-row button {
+    padding: 5px 14px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc); transition: all .15s;
+}
+.storyforge-new-tool-form .sf-form-row button:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.14)); }
+.storyforge-new-tool-form .sf-form-row .sf-save-btn { background: rgba(92,184,92,.15); border-color: rgba(92,184,92,.4); }
+.storyforge-new-tool-form .sf-form-row .sf-save-btn:hover { background: rgba(92,184,92,.25); }
+.storyforge-new-tool-form .sf-form-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--SmartThemeQuoteColor, #999); font-weight: 600;
+}
+
+/* === Active badge === */
+.storyforge-active-badge {
+    position: fixed; bottom: 80px; right: 20px; z-index: 9999;
+    background: var(--SmartThemeBotMesBlurTintColor, #2a2a4a);
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border-radius: 12px; padding: 8px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.4); max-width: 260px;
+    font-size: 13px; animation: sf-fadeIn .25s ease;
+}
+.storyforge-active-badge-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-weight: 600; font-size: 12px; color: var(--SmartThemeQuoteColor, #aaa);
+    text-transform: uppercase; letter-spacing: .3px;
+}
+.storyforge-active-badge-clear { cursor: pointer; font-size: 11px; opacity: .6; transition: opacity .15s; }
+.storyforge-active-badge-clear:hover { opacity: 1; color: #ff6b6b; }
+.storyforge-active-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 8px; border-radius: 6px; font-size: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc);
+    animation: sf-pulse 2s ease-in-out infinite;
+}
+.storyforge-active-tag i { color: var(--SmartThemeQuoteColor, #aaa); font-size: 11px; }
+.storyforge-tag-remove { cursor: pointer; opacity: .5; font-size: 10px; transition: opacity .15s; margin-left: 2px; }
+.storyforge-tag-remove:hover { opacity: 1; color: #ff6b6b; }
+
+/* === Footer === */
+.storyforge-footer { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+.storyforge-footer button {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 16px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc); transition: all .15s;
+}
+.storyforge-footer button:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.12)); }
+
+@keyframes sf-fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes sf-pulse { 0%,100% { opacity:1; } 50% { opacity:.7; } }
