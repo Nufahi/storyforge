@@ -31,6 +31,8 @@ const defaultSettings = Object.freeze({
     autoClear: true,
     tools: null,
     quickInserts: null,
+    qiBarVisible: true,
+    sendBarButton: true,
 });
 
 function getSettings() {
@@ -275,6 +277,8 @@ function importQuickInserts() {
 
 function renderQuickInsertBar() {
     $('#sf-qi-bar').remove();
+    const settings = getSettings();
+    if (!settings.qiBarVisible) return;
     const qi = getQuickInserts().filter(x => x.enabled);
     if (qi.length === 0) return;
 
@@ -421,6 +425,14 @@ function addQuickInsertSettingsPanel() {
                 </div>
                 <div class="inline-drawer-content">
                     <div class="sf-qi-info">Quick text insertion buttons above the input field. Configure button name, content to insert, insert position and cursor placement.</div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-qi-bar-visible" ${getSettings().qiBarVisible ? 'checked' : ''}>
+                        <label for="sf-qi-bar-visible">Show Quick Insert bar</label>
+                    </div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-qi-sendbar-btn" ${getSettings().sendBarButton ? 'checked' : ''}>
+                        <label for="sf-qi-sendbar-btn">Show StoryForge button in send bar</label>
+                    </div>
                     <div id="sf-qi-settings-list" class="sf-qi-settings-list"></div>
                     <div class="sf-qi-actions">
                         <button id="sf-qi-add-btn" class="menu_button"><i class="fa-solid fa-plus"></i> Add</button>
@@ -472,6 +484,20 @@ function addQuickInsertSettingsPanel() {
             renderQuickInsertBar();
             toastr.info('Quick Inserts reset to defaults', 'StoryForge');
         }
+    });
+
+    // QI bar visibility toggle
+    $('#sf-qi-bar-visible').on('change', function () {
+        getSettings().qiBarVisible = $(this).is(':checked');
+        saveSettings();
+        renderQuickInsertBar();
+    });
+
+    // Send bar button toggle
+    $('#sf-qi-sendbar-btn').on('change', function () {
+        getSettings().sendBarButton = $(this).is(':checked');
+        saveSettings();
+        updateSendBarButton();
     });
 
     // Delegated events for toggle/edit/delete
@@ -795,6 +821,23 @@ function addMenuButton() {
     console.log(`[${MODULE_NAME}] Menu button added`);
 }
 
+// ==== Send Bar Button ====
+
+function updateSendBarButton() {
+    $('#sf-sendbar-btn').remove();
+    if (!getSettings().sendBarButton) return;
+
+    const btn = $(`<div id="sf-sendbar-btn" class="sf-sendbar-btn interactable" title="StoryForge">
+        <span class="fa-solid fa-fw storyforge-icon"></span>
+    </div>`);
+    btn.on('click', (e) => { e.preventDefault(); openStoryForgePopup(); });
+
+    const optionsBtn = $('#options_button');
+    if (optionsBtn.length) {
+        optionsBtn.before(btn);
+    }
+}
+
 // ==== Slash commands ====
 
 function registerSlashCommands() {
@@ -833,12 +876,13 @@ function registerSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v3.4...`);
+    console.log(`[${MODULE_NAME}] Loading v3.5...`);
     try {
         addMenuButton();
         registerSlashCommands();
         addQuickInsertSettingsPanel();
         renderQuickInsertBar();
+        updateSendBarButton();
         const { eventSource, event_types } = SillyTavern.getContext();
         eventSource.on(event_types.GENERATION_ENDED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) {
@@ -849,7 +893,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v3.4 loaded`);
+        console.log(`[${MODULE_NAME}] v3.5 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

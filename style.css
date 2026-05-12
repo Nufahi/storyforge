@@ -480,3 +480,30 @@
     font-size: 13px;
     cursor: pointer;
 }
+
+/* === QI Option Rows (checkboxes in panel) === */
+.sf-qi-option-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-qi-option-row label {
+    cursor: pointer;
+}
+
+/* === Send Bar Button === */
+.sf-sendbar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 2px;
+    opacity: .7;
+    transition: opacity .15s;
+}
+.sf-sendbar-btn:hover {
+    opacity: 1;
+}
