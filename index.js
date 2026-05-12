@@ -16,11 +16,21 @@ const DEFAULT_TOOLS = [
 
 const activeInjections = new Map();
 
+const DEFAULT_QUICK_INSERTS = [
+    { id: 'qi_action', name: '**', enabled: true, description: 'Action', content: '**', cursorPosition: 1, insertPosition: 'as_is' },
+    { id: 'qi_quote', name: '""', enabled: true, description: 'Quote', content: '""', cursorPosition: 1, insertPosition: 'as_is' },
+    { id: 'qi_thought', name: '()', enabled: true, description: 'Thought', content: '()', cursorPosition: 1, insertPosition: 'as_is' },
+    { id: 'qi_bold_italic', name: '****', enabled: true, description: 'Bold+Italic', content: '******', cursorPosition: 3, insertPosition: 'as_is' },
+    { id: 'qi_ooc', name: 'OOC', enabled: true, description: 'Out of Character', content: '[OOC: ]', cursorPosition: 6, insertPosition: 'append' },
+    { id: 'qi_newline', name: 'NL', enabled: true, description: 'New Line', content: '', cursorPosition: 0, insertPosition: 'newline' },
+];
+
 const defaultSettings = Object.freeze({
     enabled: true,
     depth: 1,
     autoClear: true,
     tools: null,
+    quickInserts: null,
 });
 
 function getSettings() {
@@ -135,6 +145,390 @@ function resetToDefaults() {
     getSettings().tools = structuredClone(DEFAULT_TOOLS);
     clearAllTools();
     saveSettings();
+}
+
+// ==== Quick Inserts ====
+
+function getQuickInserts() {
+    const s = getSettings();
+    if (!s.quickInserts) s.quickInserts = structuredClone(DEFAULT_QUICK_INSERTS);
+    return s.quickInserts;
+}
+
+function addQuickInsert(name, description, content, cursorPosition, insertPosition) {
+    const qi = getQuickInserts();
+    const id = 'qi_' + Date.now();
+    qi.push({ id, name, enabled: true, description, content, cursorPosition, insertPosition });
+    saveSettings();
+    return id;
+}
+
+function updateQuickInsert(id, data) {
+    const qi = getQuickInserts();
+    const item = qi.find(x => x.id === id);
+    if (item) {
+        Object.assign(item, data);
+        saveSettings();
+    }
+}
+
+function deleteQuickInsert(id) {
+    const s = getSettings();
+    s.quickInserts = getQuickInserts().filter(x => x.id !== id);
+    saveSettings();
+}
+
+function clickQuickInsert(button) {
+    const activeEl = document.activeElement;
+    const possibleTextarea = activeEl?.tagName === 'IFRAME'
+        ? activeEl.contentDocument?.activeElement
+        : activeEl;
+    const $textarea = (possibleTextarea && (possibleTextarea.tagName === 'TEXTAREA' ||
+        (possibleTextarea.tagName === 'INPUT' && $(possibleTextarea).prop('type') === 'text')))
+        ? $(possibleTextarea)
+        : $('#send_textarea');
+    if ($textarea.length === 0) return;
+
+    const textareaEl = $textarea[0];
+    const text = $textarea.val() || '';
+    let start = $textarea.prop('selectionStart') || 0;
+    let end = $textarea.prop('selectionEnd') || 0;
+
+    switch (button.insertPosition) {
+        case 'prepend': {
+            const prevNL = text.lastIndexOf('\n', start - 1);
+            start = end = prevNL === -1 ? 0 : prevNL + 1;
+            break;
+        }
+        case 'as_is':
+            break;
+        case 'append': {
+            const nextNL = text.indexOf('\n', end);
+            start = end = nextNL === -1 ? text.length : nextNL;
+            break;
+        }
+        case 'newline': {
+            const nextNL2 = text.indexOf('\n', end);
+            start = end = nextNL2 === -1 ? text.length : nextNL2;
+            break;
+        }
+    }
+
+    const prefix = button.insertPosition === 'newline' ? '\n' : '';
+    $textarea.val(text.substring(0, start) + prefix + button.content + text.substring(end));
+
+    const cursorPos = start + Math.min(Math.max(button.cursorPosition, 0), button.content.length) + prefix.length;
+    textareaEl.focus();
+    try {
+        textareaEl.setSelectionRange(cursorPos, cursorPos);
+    } catch {
+        $textarea.prop('selectionStart', cursorPos);
+        $textarea.prop('selectionEnd', cursorPos);
+    }
+}
+
+function exportQuickInserts() {
+    const qi = getQuickInserts();
+    const data = JSON.stringify({ storyforge_quick_inserts: qi }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'storyforge_quick_inserts.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toastr.success('Quick Inserts exported', 'StoryForge');
+}
+
+function importQuickInserts() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try {
+                const parsed = JSON.parse(ev.target.result);
+                if (!parsed.storyforge_quick_inserts || !Array.isArray(parsed.storyforge_quick_inserts)) {
+                    toastr.error('Invalid file format', 'StoryForge');
+                    return;
+                }
+                const s = getSettings();
+                s.quickInserts = parsed.storyforge_quick_inserts;
+                saveSettings();
+                renderQuickInsertBar();
+                renderQuickInsertSettings();
+                toastr.success(`Imported ${s.quickInserts.length} Quick Inserts`, 'StoryForge');
+            } catch (err) {
+                toastr.error('Failed to parse file', 'StoryForge');
+                console.error(`[${MODULE_NAME}] Import error`, err);
+            }
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}
+
+// ==== Quick Insert Bar (floating above input) ====
+
+function renderQuickInsertBar() {
+    $('#sf-qi-bar').remove();
+    const qi = getQuickInserts().filter(x => x.enabled);
+    if (qi.length === 0) return;
+
+    const buttons = qi.map(b =>
+        `<button class="sf-qi-btn" data-qi-id="${b.id}" title="${b.description || b.name}">${b.name}</button>`
+    ).join('');
+
+    const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar">${buttons}</div>`);
+    const sendForm = $('#send_form');
+    if (sendForm.length) {
+        sendForm.before(bar);
+    } else {
+        $('body').append(bar);
+    }
+
+    bar.on('click', '.sf-qi-btn', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const qiId = $(this).data('qi-id');
+        const button = getQuickInserts().find(x => x.id === qiId);
+        if (button) clickQuickInsert(button);
+    });
+}
+
+// ==== Quick Insert Settings Panel (in extensions_settings2) ====
+
+function buildQuickInsertEditModal(qi = null) {
+    const name = qi?.name || '';
+    const desc = qi?.description || '';
+    const content = qi?.content || '';
+    const cursorPos = qi?.cursorPosition ?? 0;
+    const insertPos = qi?.insertPosition || 'as_is';
+    const cursorType = !qi ? 'end'
+        : cursorPos === 0 ? 'begin'
+        : cursorPos === Math.floor(content.length / 2) ? 'middle'
+        : cursorPos === content.length ? 'end'
+        : 'custom';
+
+    return `<div class="sf-qi-modal">
+        <div class="sf-qi-form-group">
+            <label>Name:</label>
+            <input type="text" id="sf-qi-edit-name" value="${name.replace(/"/g, '&quot;')}" maxlength="20" placeholder="e.g. **">
+        </div>
+        <div class="sf-qi-form-group">
+            <label>Description:</label>
+            <input type="text" id="sf-qi-edit-desc" value="${desc.replace(/"/g, '&quot;')}" placeholder="e.g. Action">
+        </div>
+        <div class="sf-qi-form-group">
+            <label>Content:</label>
+            <input type="text" id="sf-qi-edit-content" value="${content.replace(/"/g, '&quot;')}" placeholder="Text to insert">
+        </div>
+        <div class="sf-qi-form-group">
+            <label>Insert Position:</label>
+            <select id="sf-qi-edit-insert-pos">
+                <option value="prepend" ${insertPos === 'prepend' ? 'selected' : ''}>Line start</option>
+                <option value="as_is" ${insertPos === 'as_is' ? 'selected' : ''}>At cursor</option>
+                <option value="append" ${insertPos === 'append' ? 'selected' : ''}>Line end</option>
+                <option value="newline" ${insertPos === 'newline' ? 'selected' : ''}>New line</option>
+            </select>
+        </div>
+        <div class="sf-qi-form-group">
+            <label>Cursor After:</label>
+            <select id="sf-qi-edit-cursor-type">
+                <option value="begin" ${cursorType === 'begin' ? 'selected' : ''}>Content start</option>
+                <option value="middle" ${cursorType === 'middle' ? 'selected' : ''}>Content middle</option>
+                <option value="end" ${cursorType === 'end' ? 'selected' : ''}>Content end</option>
+                <option value="custom" ${cursorType === 'custom' ? 'selected' : ''}>Custom</option>
+            </select>
+            <input type="number" id="sf-qi-edit-cursor-num" min="0" value="${cursorPos}"
+                style="width:60px;${cursorType !== 'custom' ? 'display:none' : ''}">
+        </div>
+    </div>`;
+}
+
+function getModalFormData() {
+    const name = $('#sf-qi-edit-name').val()?.trim();
+    const desc = $('#sf-qi-edit-desc').val()?.trim() || '';
+    const content = $('#sf-qi-edit-content').val() || '';
+    const insertPosition = $('#sf-qi-edit-insert-pos').val();
+    const cursorType = $('#sf-qi-edit-cursor-type').val();
+
+    let cursorPosition;
+    switch (cursorType) {
+        case 'begin': cursorPosition = 0; break;
+        case 'middle': cursorPosition = Math.floor(content.length / 2); break;
+        case 'end': cursorPosition = content.length; break;
+        case 'custom': cursorPosition = Math.min(Math.max(parseInt($('#sf-qi-edit-cursor-num').val(), 10) || 0, 0), content.length); break;
+        default: cursorPosition = 0;
+    }
+
+    return { name, description: desc, content, cursorPosition, insertPosition };
+}
+
+function renderQuickInsertSettings() {
+    const container = $('#sf-qi-settings-list');
+    if (!container.length) return;
+
+    const qi = getQuickInserts();
+    const rows = qi.map((item, idx) => `
+        <div class="sf-qi-settings-row" data-qi-id="${item.id}" data-qi-idx="${idx}">
+            <span class="sf-qi-drag-handle">&#9776;</span>
+            <input type="checkbox" class="sf-qi-toggle" data-qi-id="${item.id}" ${item.enabled ? 'checked' : ''}>
+            <span class="sf-qi-preview">${item.name}</span>
+            <span class="sf-qi-desc">${item.description || ''}</span>
+            <button class="sf-qi-edit-btn fa-solid fa-pen" data-qi-id="${item.id}" title="Edit"></button>
+            <button class="sf-qi-del-btn fa-solid fa-trash" data-qi-id="${item.id}" title="Delete"></button>
+        </div>
+    `).join('');
+
+    container.html(rows);
+
+    // Make sortable
+    try {
+        if (container.sortable('instance')) container.sortable('destroy');
+    } catch { /* not initialized */ }
+    container.sortable({
+        handle: '.sf-qi-drag-handle',
+        placeholder: 'sf-qi-sort-placeholder',
+        tolerance: 'pointer',
+        update: function () {
+            const newOrder = [];
+            container.children('.sf-qi-settings-row').each(function () {
+                const id = $(this).data('qi-id');
+                const item = qi.find(x => x.id === id);
+                if (item) newOrder.push(item);
+            });
+            getSettings().quickInserts = newOrder;
+            saveSettings();
+            renderQuickInsertBar();
+        }
+    });
+}
+
+function addQuickInsertSettingsPanel() {
+    const existing = $('#sf-qi-panel');
+    if (existing.length) return;
+
+    const panel = $(`
+        <div id="sf-qi-panel" class="sf-qi-panel">
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header" id="sf-qi-drawer-toggle">
+                    <b><i class="fa-solid fa-wand-magic-sparkles"></i> StoryForge - Quick Inserts</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content" id="sf-qi-drawer-content" style="display:none">
+                    <div class="sf-qi-info">Quick text insertion buttons above the input field. Configure button name, content to insert, insert position and cursor placement.</div>
+                    <div id="sf-qi-settings-list" class="sf-qi-settings-list"></div>
+                    <div class="sf-qi-actions">
+                        <button id="sf-qi-add-btn" class="menu_button"><i class="fa-solid fa-plus"></i> Add</button>
+                        <button id="sf-qi-export-btn" class="menu_button"><i class="fa-solid fa-download"></i> Export</button>
+                        <button id="sf-qi-import-btn" class="menu_button"><i class="fa-solid fa-upload"></i> Import</button>
+                        <button id="sf-qi-reset-btn" class="menu_button"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    $('#extensions_settings2').append(panel);
+
+    // Drawer toggle
+    $('#sf-qi-drawer-toggle').on('click', function () {
+        const content = $('#sf-qi-drawer-content');
+        const icon = $(this).find('.inline-drawer-icon');
+        content.slideToggle(200);
+        icon.toggleClass('up down');
+    });
+
+    // Add button
+    $('#sf-qi-add-btn').on('click', async () => {
+        const { Popup, POPUP_TYPE } = SillyTavern.getContext();
+        const popup = new Popup(buildQuickInsertEditModal(), POPUP_TYPE.CONFIRM, '', { okButton: 'Save', cancelButton: 'Cancel' });
+        requestAnimationFrame(() => {
+            $(document).off('change.sf-qi-cursor').on('change.sf-qi-cursor', '#sf-qi-edit-cursor-type', function () {
+                $('#sf-qi-edit-cursor-num').toggle($(this).val() === 'custom');
+            });
+        });
+        const result = await popup.show();
+        $(document).off('change.sf-qi-cursor');
+        if (result) {
+            const data = getModalFormData();
+            if (!data.name) { toastr.warning('Name is required', 'StoryForge'); return; }
+            addQuickInsert(data.name, data.description, data.content, data.cursorPosition, data.insertPosition);
+            renderQuickInsertSettings();
+            renderQuickInsertBar();
+            toastr.success(`"${data.name}" added`, 'StoryForge');
+        }
+    });
+
+    // Export
+    $('#sf-qi-export-btn').on('click', exportQuickInserts);
+
+    // Import
+    $('#sf-qi-import-btn').on('click', importQuickInserts);
+
+    // Reset
+    $('#sf-qi-reset-btn').on('click', async () => {
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm('Reset Quick Inserts', 'Reset all Quick Inserts to defaults?');
+        if (confirmed) {
+            getSettings().quickInserts = structuredClone(DEFAULT_QUICK_INSERTS);
+            saveSettings();
+            renderQuickInsertSettings();
+            renderQuickInsertBar();
+            toastr.info('Quick Inserts reset to defaults', 'StoryForge');
+        }
+    });
+
+    // Delegated events for toggle/edit/delete
+    panel.on('change', '.sf-qi-toggle', function () {
+        const id = $(this).data('qi-id');
+        const item = getQuickInserts().find(x => x.id === id);
+        if (item) {
+            item.enabled = $(this).is(':checked');
+            saveSettings();
+            renderQuickInsertBar();
+        }
+    });
+
+    panel.on('click', '.sf-qi-edit-btn', async function () {
+        const id = $(this).data('qi-id');
+        const item = getQuickInserts().find(x => x.id === id);
+        if (!item) return;
+        const { Popup, POPUP_TYPE } = SillyTavern.getContext();
+        const popup = new Popup(buildQuickInsertEditModal(item), POPUP_TYPE.CONFIRM, '', { okButton: 'Save', cancelButton: 'Cancel' });
+        requestAnimationFrame(() => {
+            $(document).off('change.sf-qi-cursor').on('change.sf-qi-cursor', '#sf-qi-edit-cursor-type', function () {
+                $('#sf-qi-edit-cursor-num').toggle($(this).val() === 'custom');
+            });
+        });
+        const result = await popup.show();
+        $(document).off('change.sf-qi-cursor');
+        if (result) {
+            const data = getModalFormData();
+            if (!data.name) { toastr.warning('Name is required', 'StoryForge'); return; }
+            updateQuickInsert(id, data);
+            renderQuickInsertSettings();
+            renderQuickInsertBar();
+            toastr.success(`"${data.name}" updated`, 'StoryForge');
+        }
+    });
+
+    panel.on('click', '.sf-qi-del-btn', async function () {
+        const id = $(this).data('qi-id');
+        const item = getQuickInserts().find(x => x.id === id);
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm('Delete', `Delete "${item?.name || id}"?`);
+        if (confirmed) {
+            deleteQuickInsert(id);
+            renderQuickInsertSettings();
+            renderQuickInsertBar();
+            toastr.info('Deleted', 'StoryForge');
+        }
+    });
+
+    renderQuickInsertSettings();
 }
 
 // ==== Badge ====
@@ -447,10 +841,12 @@ function registerSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v3.3...`);
+    console.log(`[${MODULE_NAME}] Loading v3.4...`);
     try {
         addMenuButton();
         registerSlashCommands();
+        addQuickInsertSettingsPanel();
+        renderQuickInsertBar();
         const { eventSource, event_types } = SillyTavern.getContext();
         eventSource.on(event_types.GENERATION_ENDED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) {
@@ -461,7 +857,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] \u2705 v3.3 loaded`);
+        console.log(`[${MODULE_NAME}] v3.4 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

@@ -303,3 +303,188 @@
 
 @keyframes sf-fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
 @keyframes sf-pulse { 0%,100% { opacity:1; } 50% { opacity:.7; } }
+
+/* === Quick Inserts Bar === */
+.sf-qi-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 8px;
+    align-items: center;
+}
+.sf-qi-btn {
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all .15s ease;
+    user-select: none;
+    line-height: 1.4;
+    min-width: 28px;
+    text-align: center;
+}
+.sf-qi-btn:hover {
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.14));
+    border-color: var(--SmartThemeQuoteColor, #888);
+    transform: translateY(-1px);
+}
+.sf-qi-btn:active {
+    transform: translateY(0);
+}
+
+/* === Quick Insert Settings Panel === */
+.sf-qi-panel {
+    margin-bottom: 10px;
+}
+.sf-qi-panel .inline-drawer-header {
+    cursor: pointer;
+    user-select: none;
+}
+.sf-qi-panel .inline-drawer-header b {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.sf-qi-info {
+    font-size: 12px;
+    color: var(--SmartThemeQuoteColor, #999);
+    font-style: italic;
+    margin-bottom: 8px;
+}
+.sf-qi-settings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+.sf-qi-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    transition: background .15s;
+}
+.sf-qi-settings-row:hover {
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.07));
+}
+.sf-qi-drag-handle {
+    cursor: grab;
+    color: var(--SmartThemeQuoteColor, #777);
+    opacity: .6;
+    font-size: 14px;
+    transition: opacity .15s;
+}
+.sf-qi-drag-handle:hover { opacity: 1; }
+.sf-qi-drag-handle:active { cursor: grabbing; }
+.sf-qi-preview {
+    min-width: 36px;
+    text-align: center;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-qi-desc {
+    flex: 1;
+    font-size: 12px;
+    color: var(--SmartThemeQuoteColor, #999);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sf-qi-edit-btn, .sf-qi-del-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: .5;
+    color: var(--SmartThemeBodyColor, #ccc);
+    padding: 4px;
+    transition: opacity .15s, color .15s;
+}
+.sf-qi-edit-btn:hover { opacity: 1; }
+.sf-qi-del-btn:hover { opacity: 1; color: #ff6b6b; }
+.sf-qi-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.sf-qi-actions .menu_button {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc);
+    transition: all .15s;
+}
+.sf-qi-actions .menu_button:hover {
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.12));
+}
+.sf-qi-sort-placeholder {
+    visibility: visible !important;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    border: 1px dashed var(--SmartThemeBorderColor, #555);
+    border-radius: 6px;
+    height: 34px;
+}
+
+/* === Quick Insert Edit Modal === */
+.sf-qi-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px;
+    min-width: 300px;
+}
+.sf-qi-form-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.sf-qi-form-group label {
+    min-width: 110px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--SmartThemeBodyColor, #ccc);
+    flex-shrink: 0;
+}
+.sf-qi-form-group input[type="text"],
+.sf-qi-form-group input[type="number"] {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 13px;
+    font-family: inherit;
+}
+.sf-qi-form-group input:focus,
+.sf-qi-form-group select:focus {
+    outline: none;
+    border-color: var(--SmartThemeQuoteColor, #888);
+}
+.sf-qi-form-group select {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 13px;
+    cursor: pointer;
+}
