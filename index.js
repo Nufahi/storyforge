@@ -283,13 +283,18 @@ function renderQuickInsertBar() {
     if (qi.length === 0) return;
 
     const buttons = qi.map(b =>
-        `<button class="sf-qi-btn" data-qi-id="${b.id}" title="${b.description || b.name}">${b.name}</button>`
+        `<div class="sf-qi-btn menu_button interactable" data-qi-id="${b.id}" title="${b.description || b.name}" tabindex="0">${b.name}</div>`
     ).join('');
 
-    const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar">${buttons}</div>`);
+    const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar flex-container flexGap5">${buttons}</div>`);
+
+    // Insert as a part of #send_form so it visually continues the sendbar.
+    // Sits inside the send form, above the input.
     const sendForm = $('#send_form');
     if (sendForm.length) {
-        sendForm.before(bar);
+        const qrBar = sendForm.find('#qr--bar');
+        if (qrBar.length) qrBar.before(bar);
+        else sendForm.prepend(bar);
     } else {
         $('body').append(bar);
     }
