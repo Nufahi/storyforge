@@ -481,6 +481,21 @@
     cursor: pointer;
 }
 
+/* === QI Modal Buttons === */
+.sf-qi-modal-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+}
+.sf-qi-save-btn {
+    background: rgba(92,184,92,.15) !important;
+    border-color: rgba(92,184,92,.4) !important;
+}
+.sf-qi-save-btn:hover {
+    background: rgba(92,184,92,.25) !important;
+}
+
 /* === QI Option Rows (checkboxes in panel) === */
 .sf-qi-option-row {
     display: flex;

@@ -305,71 +305,105 @@ function renderQuickInsertBar() {
 
 // ==== Quick Insert Settings Panel (in extensions_settings2) ====
 
-function buildQuickInsertEditModal(qi = null) {
-    const name = qi?.name || '';
-    const desc = qi?.description || '';
-    const content = qi?.content || '';
-    const cursorPos = qi?.cursorPosition ?? 0;
-    const insertPos = qi?.insertPosition || 'as_is';
-    const cursorType = !qi ? 'end'
-        : cursorPos === 0 ? 'begin'
-        : cursorPos === Math.floor(content.length / 2) ? 'middle'
-        : cursorPos === content.length ? 'end'
-        : 'custom';
+function openQuickInsertEditor(qi = null) {
+    return new Promise((resolve) => {
+        const name = qi?.name || '';
+        const desc = qi?.description || '';
+        const content = qi?.content || '';
+        const cursorPos = qi?.cursorPosition ?? 0;
+        const insertPos = qi?.insertPosition || 'as_is';
+        const cursorType = !qi ? 'end'
+            : cursorPos === 0 ? 'begin'
+            : cursorPos === Math.floor(content.length / 2) ? 'middle'
+            : cursorPos === content.length ? 'end'
+            : 'custom';
 
-    return `<div class="sf-qi-modal">
-        <div class="sf-qi-form-group">
-            <label>Name:</label>
-            <input type="text" id="sf-qi-edit-name" value="${name.replace(/"/g, '&quot;')}" maxlength="20" placeholder="e.g. **">
-        </div>
-        <div class="sf-qi-form-group">
-            <label>Description:</label>
-            <input type="text" id="sf-qi-edit-desc" value="${desc.replace(/"/g, '&quot;')}" placeholder="e.g. Action">
-        </div>
-        <div class="sf-qi-form-group">
-            <label>Content:</label>
-            <input type="text" id="sf-qi-edit-content" value="${content.replace(/"/g, '&quot;')}" placeholder="Text to insert">
-        </div>
-        <div class="sf-qi-form-group">
-            <label>Insert Position:</label>
-            <select id="sf-qi-edit-insert-pos">
-                <option value="prepend" ${insertPos === 'prepend' ? 'selected' : ''}>Line start</option>
-                <option value="as_is" ${insertPos === 'as_is' ? 'selected' : ''}>At cursor</option>
-                <option value="append" ${insertPos === 'append' ? 'selected' : ''}>Line end</option>
-                <option value="newline" ${insertPos === 'newline' ? 'selected' : ''}>New line</option>
-            </select>
-        </div>
-        <div class="sf-qi-form-group">
-            <label>Cursor After:</label>
-            <select id="sf-qi-edit-cursor-type">
-                <option value="begin" ${cursorType === 'begin' ? 'selected' : ''}>Content start</option>
-                <option value="middle" ${cursorType === 'middle' ? 'selected' : ''}>Content middle</option>
-                <option value="end" ${cursorType === 'end' ? 'selected' : ''}>Content end</option>
-                <option value="custom" ${cursorType === 'custom' ? 'selected' : ''}>Custom</option>
-            </select>
-            <input type="number" id="sf-qi-edit-cursor-num" min="0" value="${cursorPos}"
-                style="width:60px;${cursorType !== 'custom' ? 'display:none' : ''}">
-        </div>
-    </div>`;
-}
+        const html = `<div class="sf-qi-modal">
+            <div class="sf-qi-form-group">
+                <label>Name:</label>
+                <input type="text" id="sf-qi-edit-name" value="${name.replace(/"/g, '&quot;')}" maxlength="20" placeholder="e.g. **">
+            </div>
+            <div class="sf-qi-form-group">
+                <label>Description:</label>
+                <input type="text" id="sf-qi-edit-desc" value="${desc.replace(/"/g, '&quot;')}" placeholder="e.g. Action">
+            </div>
+            <div class="sf-qi-form-group">
+                <label>Content:</label>
+                <input type="text" id="sf-qi-edit-content" value="${content.replace(/"/g, '&quot;')}" placeholder="Text to insert">
+            </div>
+            <div class="sf-qi-form-group">
+                <label>Insert Position:</label>
+                <select id="sf-qi-edit-insert-pos">
+                    <option value="prepend" ${insertPos === 'prepend' ? 'selected' : ''}>Line start</option>
+                    <option value="as_is" ${insertPos === 'as_is' ? 'selected' : ''}>At cursor</option>
+                    <option value="append" ${insertPos === 'append' ? 'selected' : ''}>Line end</option>
+                    <option value="newline" ${insertPos === 'newline' ? 'selected' : ''}>New line</option>
+                </select>
+            </div>
+            <div class="sf-qi-form-group">
+                <label>Cursor After:</label>
+                <select id="sf-qi-edit-cursor-type">
+                    <option value="begin" ${cursorType === 'begin' ? 'selected' : ''}>Content start</option>
+                    <option value="middle" ${cursorType === 'middle' ? 'selected' : ''}>Content middle</option>
+                    <option value="end" ${cursorType === 'end' ? 'selected' : ''}>Content end</option>
+                    <option value="custom" ${cursorType === 'custom' ? 'selected' : ''}>Custom</option>
+                </select>
+                <input type="number" id="sf-qi-edit-cursor-num" min="0" value="${cursorPos}"
+                    style="width:60px;${cursorType !== 'custom' ? 'display:none' : ''}">
+            </div>
+            <div class="sf-qi-modal-buttons">
+                <button id="sf-qi-modal-cancel" class="menu_button">Cancel</button>
+                <button id="sf-qi-modal-save" class="menu_button sf-qi-save-btn">Save</button>
+            </div>
+        </div>`;
 
-function getModalFormData() {
-    const name = $('#sf-qi-edit-name').val()?.trim();
-    const desc = $('#sf-qi-edit-desc').val()?.trim() || '';
-    const content = $('#sf-qi-edit-content').val() || '';
-    const insertPosition = $('#sf-qi-edit-insert-pos').val();
-    const cursorType = $('#sf-qi-edit-cursor-type').val();
+        const { Popup, POPUP_TYPE } = SillyTavern.getContext();
+        const popup = new Popup(html, POPUP_TYPE.TEXT, '', { okButton: 'Close', allowVerticalScrolling: true });
 
-    let cursorPosition;
-    switch (cursorType) {
-        case 'begin': cursorPosition = 0; break;
-        case 'middle': cursorPosition = Math.floor(content.length / 2); break;
-        case 'end': cursorPosition = content.length; break;
-        case 'custom': cursorPosition = Math.min(Math.max(parseInt($('#sf-qi-edit-cursor-num').val(), 10) || 0, 0), content.length); break;
-        default: cursorPosition = 0;
-    }
+        let resolved = false;
 
-    return { name, description: desc, content, cursorPosition, insertPosition };
+        requestAnimationFrame(() => {
+            $('#sf-qi-edit-cursor-type').on('change', function () {
+                $('#sf-qi-edit-cursor-num').toggle($(this).val() === 'custom');
+            });
+
+            $('#sf-qi-modal-save').on('click', () => {
+                const formName = $('#sf-qi-edit-name').val()?.trim();
+                if (!formName) { toastr.warning('Name is required', 'StoryForge'); return; }
+
+                const formContent = $('#sf-qi-edit-content').val() || '';
+                const formCursorType = $('#sf-qi-edit-cursor-type').val();
+                let formCursorPos;
+                switch (formCursorType) {
+                    case 'begin': formCursorPos = 0; break;
+                    case 'middle': formCursorPos = Math.floor(formContent.length / 2); break;
+                    case 'end': formCursorPos = formContent.length; break;
+                    case 'custom': formCursorPos = Math.min(Math.max(parseInt($('#sf-qi-edit-cursor-num').val(), 10) || 0, 0), formContent.length); break;
+                    default: formCursorPos = 0;
+                }
+
+                resolved = true;
+                popup.complete(1);
+                resolve({
+                    name: formName,
+                    description: $('#sf-qi-edit-desc').val()?.trim() || '',
+                    content: formContent,
+                    cursorPosition: formCursorPos,
+                    insertPosition: $('#sf-qi-edit-insert-pos').val(),
+                });
+            });
+
+            $('#sf-qi-modal-cancel').on('click', () => {
+                resolved = true;
+                popup.complete(0);
+                resolve(null);
+            });
+        });
+
+        popup.show().then(() => {
+            if (!resolved) resolve(null);
+        });
+    });
 }
 
 function renderQuickInsertSettings() {
@@ -449,18 +483,8 @@ function addQuickInsertSettingsPanel() {
 
     // Add button
     $('#sf-qi-add-btn').on('click', async () => {
-        const { Popup, POPUP_TYPE } = SillyTavern.getContext();
-        const popup = new Popup(buildQuickInsertEditModal(), POPUP_TYPE.CONFIRM, '', { okButton: 'Save', cancelButton: 'Cancel' });
-        requestAnimationFrame(() => {
-            $(document).off('change.sf-qi-cursor').on('change.sf-qi-cursor', '#sf-qi-edit-cursor-type', function () {
-                $('#sf-qi-edit-cursor-num').toggle($(this).val() === 'custom');
-            });
-        });
-        const result = await popup.show();
-        $(document).off('change.sf-qi-cursor');
-        if (result) {
-            const data = getModalFormData();
-            if (!data.name) { toastr.warning('Name is required', 'StoryForge'); return; }
+        const data = await openQuickInsertEditor();
+        if (data) {
             addQuickInsert(data.name, data.description, data.content, data.cursorPosition, data.insertPosition);
             renderQuickInsertSettings();
             renderQuickInsertBar();
@@ -515,18 +539,8 @@ function addQuickInsertSettingsPanel() {
         const id = $(this).data('qi-id');
         const item = getQuickInserts().find(x => x.id === id);
         if (!item) return;
-        const { Popup, POPUP_TYPE } = SillyTavern.getContext();
-        const popup = new Popup(buildQuickInsertEditModal(item), POPUP_TYPE.CONFIRM, '', { okButton: 'Save', cancelButton: 'Cancel' });
-        requestAnimationFrame(() => {
-            $(document).off('change.sf-qi-cursor').on('change.sf-qi-cursor', '#sf-qi-edit-cursor-type', function () {
-                $('#sf-qi-edit-cursor-num').toggle($(this).val() === 'custom');
-            });
-        });
-        const result = await popup.show();
-        $(document).off('change.sf-qi-cursor');
-        if (result) {
-            const data = getModalFormData();
-            if (!data.name) { toastr.warning('Name is required', 'StoryForge'); return; }
+        const data = await openQuickInsertEditor(item);
+        if (data) {
             updateQuickInsert(id, data);
             renderQuickInsertSettings();
             renderQuickInsertBar();
