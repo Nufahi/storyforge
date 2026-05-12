@@ -286,7 +286,7 @@ function renderQuickInsertBar() {
         `<div class="sf-qi-btn menu_button interactable" data-qi-id="${b.id}" title="${b.description || b.name}" tabindex="0">${b.name}</div>`
     ).join('');
 
-    const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar flex-container flexGap5">${buttons}</div>`);
+    const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar">${buttons}</div>`);
 
     // Insert as a part of #send_form so it visually continues the sendbar.
     // Sits inside the send form, above the input.

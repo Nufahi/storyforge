@@ -308,14 +308,17 @@
 /* Sits inside #send_form so it visually continues the sendbar.
    Inherits theme styling from ST's .menu_button so it never looks alien. */
 #sf-qi-bar.sf-qi-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    padding: 4px 6px 2px;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    gap: 5px !important;
+    padding: 4px 6px 2px !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: transparent !important;
+    border: none !important;
+    width: 100%;
+    box-sizing: border-box;
 }
 #sf-qi-bar .sf-qi-btn {
     padding: 2px 8px;
