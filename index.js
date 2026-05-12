@@ -415,11 +415,11 @@ function addQuickInsertSettingsPanel() {
     const panel = $(`
         <div id="sf-qi-panel" class="sf-qi-panel">
             <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header" id="sf-qi-drawer-toggle">
+                <div class="inline-drawer-toggle inline-drawer-header">
                     <b><i class="fa-solid fa-wand-magic-sparkles"></i> StoryForge - Quick Inserts</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
-                <div class="inline-drawer-content" id="sf-qi-drawer-content" style="display:none">
+                <div class="inline-drawer-content">
                     <div class="sf-qi-info">Quick text insertion buttons above the input field. Configure button name, content to insert, insert position and cursor placement.</div>
                     <div id="sf-qi-settings-list" class="sf-qi-settings-list"></div>
                     <div class="sf-qi-actions">
@@ -434,14 +434,6 @@ function addQuickInsertSettingsPanel() {
     `);
 
     $('#extensions_settings2').append(panel);
-
-    // Drawer toggle
-    $('#sf-qi-drawer-toggle').on('click', function () {
-        const content = $('#sf-qi-drawer-content');
-        const icon = $(this).find('.inline-drawer-icon');
-        content.slideToggle(200);
-        icon.toggleClass('up down');
-    });
 
     // Add button
     $('#sf-qi-add-btn').on('click', async () => {

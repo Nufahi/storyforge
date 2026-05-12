@@ -311,6 +311,7 @@
     gap: 4px;
     padding: 4px 8px;
     align-items: center;
+    justify-content: center;
 }
 .sf-qi-btn {
     padding: 3px 10px;
@@ -339,15 +340,6 @@
 /* === Quick Insert Settings Panel === */
 .sf-qi-panel {
     margin-bottom: 10px;
-}
-.sf-qi-panel .inline-drawer-header {
-    cursor: pointer;
-    user-select: none;
-}
-.sf-qi-panel .inline-drawer-header b {
-    display: flex;
-    align-items: center;
-    gap: 6px;
 }
 .sf-qi-info {
     font-size: 12px;
