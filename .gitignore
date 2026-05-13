@@ -1,0 +1,7 @@
+# Editor / OS noise
+*:Zone.Identifier
+.DS_Store
+Thumbs.db
+
+# Local-only files
+*.local.json

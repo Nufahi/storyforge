@@ -3,6 +3,38 @@ const extPath = `scripts/extensions/third-party/${MODULE_NAME}`;
 const POSITION_IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
 
+// ==== Security helpers ====
+// Escape user-provided strings before interpolating into HTML. Without this
+// any user-controlled field (tool label, QI name, imported JSON, etc.) can
+// execute arbitrary JS via a payload like `<img src=x onerror=...>`.
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Validate an icon class string. Font Awesome classes only contain letters,
+// digits, dashes and spaces. Anything else is rejected (prevents attribute
+// breakout via crafted import payloads).
+function sanitizeIcon(icon) {
+    if (typeof icon !== 'string') return 'fa-solid fa-scroll';
+    if (!/^[\w\s-]{1,80}$/.test(icon)) return 'fa-solid fa-scroll';
+    return icon;
+}
+
+// Generate a collision-resistant id. Date.now() collides when two items are
+// added in the same millisecond (e.g. paste-import).
+function makeId(prefix) {
+    const rand = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID().slice(0, 8)
+        : Math.random().toString(36).slice(2, 10);
+    return `${prefix}_${Date.now().toString(36)}_${rand}`;
+}
+
 const DEFAULT_TOOLS = [
     { id: 'plot_twist', icon: 'fa-solid fa-shuffle', label: 'Plot Twist', prompt: '[StoryForge: Plot Twist] In your next response, introduce a sudden and unexpected plot twist that dramatically changes the direction of the current scene. The twist must feel organic and connected to previously established story elements. Subvert expectations.' },
     { id: 'new_npc', icon: 'fa-solid fa-user-plus', label: 'New NPC', prompt: '[StoryForge: New NPC] In your next response, introduce a brand-new NPC character into the scene. Give them a distinctive name, memorable appearance, a clear personality, and a hidden motive or secret. Their entrance should feel impactful and relevant to the current situation.' },
@@ -115,7 +147,7 @@ function clearAllTools() {
 
 function addTool(label, prompt) {
     const tools = getTools();
-    const id = 'tool_' + Date.now();
+    const id = makeId('tool');
     tools.push({ id, icon: 'fa-solid fa-scroll', label, prompt });
     saveSettings();
     return id;
@@ -159,7 +191,7 @@ function getQuickInserts() {
 
 function addQuickInsert(name, description, content, cursorPosition, insertPosition) {
     const qi = getQuickInserts();
-    const id = 'qi_' + Date.now();
+    const id = makeId('qi');
     qi.push({ id, name, enabled: true, description, content, cursorPosition, insertPosition });
     saveSettings();
     return id;
@@ -181,11 +213,9 @@ function deleteQuickInsert(id) {
 }
 
 // Track the last focused editable textarea/input so quick inserts can target
-// it even after the bar button steals focus on click.
+// it even after the bar button steals focus on click. Listener is attached in
+// the jQuery init block with a namespaced event so it can't accumulate.
 let lastFocusedEditable = null;
-$(document).on('focusin', 'textarea, input[type="text"]', function () {
-    lastFocusedEditable = this;
-});
 
 function isEditable(el) {
     if (!el) return false;
@@ -265,32 +295,79 @@ function exportQuickInserts() {
     toastr.success('Quick Inserts exported', 'StoryForge');
 }
 
+// Strictly validate one imported Quick Insert entry. Returns a sanitized copy
+// or null when invalid. Prevents prototype pollution (arr items must be plain
+// objects), enforces field types/sizes, whitelists insertPosition.
+const VALID_INSERT_POSITIONS = ['prepend', 'as_is', 'append', 'newline'];
+const MAX_QI_FIELD_LEN = 10000;
+
+function validateQuickInsert(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const name = typeof raw.name === 'string' ? raw.name.slice(0, 100) : '';
+    if (!name.trim()) return null;
+    const content = typeof raw.content === 'string' ? raw.content.slice(0, MAX_QI_FIELD_LEN) : '';
+    const description = typeof raw.description === 'string' ? raw.description.slice(0, 500) : '';
+    const insertPosition = VALID_INSERT_POSITIONS.includes(raw.insertPosition)
+        ? raw.insertPosition
+        : 'as_is';
+    let cursorPosition = Number.isFinite(raw.cursorPosition) ? Math.floor(raw.cursorPosition) : 0;
+    cursorPosition = Math.min(Math.max(cursorPosition, 0), content.length);
+    const enabled = raw.enabled !== false;
+    // Always regenerate id on import so we never trust user-supplied ids and
+    // can't collide with existing entries.
+    return {
+        id: makeId('qi'),
+        name,
+        description,
+        content,
+        cursorPosition,
+        insertPosition,
+        enabled,
+    };
+}
+
 function importQuickInserts() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json';
+    input.accept = '.json,application/json';
     input.onchange = (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        // Size guard: refuse anything > 1 MiB to avoid blocking the UI on huge
+        // / malicious files.
+        if (file.size > 1024 * 1024) {
+            toastr.error('File too large (>1 MiB)', 'StoryForge');
+            return;
+        }
         const reader = new FileReader();
         reader.onload = (ev) => {
             try {
                 const parsed = JSON.parse(ev.target.result);
-                if (!parsed.storyforge_quick_inserts || !Array.isArray(parsed.storyforge_quick_inserts)) {
+                if (!parsed || typeof parsed !== 'object'
+                    || !Array.isArray(parsed.storyforge_quick_inserts)) {
                     toastr.error('Invalid file format', 'StoryForge');
                     return;
                 }
+                const sanitized = parsed.storyforge_quick_inserts
+                    .map(validateQuickInsert)
+                    .filter(Boolean)
+                    .slice(0, 200); // cap count
+                if (sanitized.length === 0) {
+                    toastr.error('No valid Quick Inserts in file', 'StoryForge');
+                    return;
+                }
                 const s = getSettings();
-                s.quickInserts = parsed.storyforge_quick_inserts;
+                s.quickInserts = sanitized;
                 saveSettings();
                 renderQuickInsertBar();
                 renderQuickInsertSettings();
-                toastr.success(`Imported ${s.quickInserts.length} Quick Inserts`, 'StoryForge');
+                toastr.success(`Imported ${sanitized.length} Quick Inserts`, 'StoryForge');
             } catch (err) {
                 toastr.error('Failed to parse file', 'StoryForge');
                 console.error(`[${MODULE_NAME}] Import error`, err);
             }
         };
+        reader.onerror = () => toastr.error('Failed to read file', 'StoryForge');
         reader.readAsText(file);
     };
     input.click();
@@ -306,7 +383,7 @@ function renderQuickInsertBar() {
     if (qi.length === 0) return;
 
     const buttons = qi.map(b =>
-        `<div class="sf-qi-btn menu_button interactable" data-qi-id="${b.id}" title="${b.description || b.name}" tabindex="0">${b.name}</div>`
+        `<div class="sf-qi-btn menu_button interactable" data-qi-id="${escapeHtml(b.id)}" title="${escapeHtml(b.description || b.name)}" tabindex="0">${escapeHtml(b.name)}</div>`
     ).join('');
 
     const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar">${buttons}</div>`);
@@ -355,15 +432,15 @@ function openQuickInsertEditor(qi = null) {
         const html = `<div class="sf-qi-modal">
             <div class="sf-qi-form-group">
                 <label>Name:</label>
-                <input type="text" id="sf-qi-edit-name" value="${name.replace(/"/g, '&quot;')}" maxlength="20" placeholder="e.g. **">
+                <input type="text" id="sf-qi-edit-name" value="${escapeHtml(name)}" maxlength="20" placeholder="e.g. **">
             </div>
             <div class="sf-qi-form-group">
                 <label>Description:</label>
-                <input type="text" id="sf-qi-edit-desc" value="${desc.replace(/"/g, '&quot;')}" placeholder="e.g. Action">
+                <input type="text" id="sf-qi-edit-desc" value="${escapeHtml(desc)}" placeholder="e.g. Action">
             </div>
             <div class="sf-qi-form-group">
                 <label>Content:</label>
-                <input type="text" id="sf-qi-edit-content" value="${content.replace(/"/g, '&quot;')}" placeholder="Text to insert">
+                <input type="text" id="sf-qi-edit-content" value="${escapeHtml(content)}" placeholder="Text to insert">
             </div>
             <div class="sf-qi-form-group">
                 <label>Insert Position:</label>
@@ -445,16 +522,19 @@ function renderQuickInsertSettings() {
     if (!container.length) return;
 
     const qi = getQuickInserts();
-    const rows = qi.map((item, idx) => `
-        <div class="sf-qi-settings-row" data-qi-id="${item.id}" data-qi-idx="${idx}">
+    const rows = qi.map((item, idx) => {
+        const id = escapeHtml(item.id);
+        return `
+        <div class="sf-qi-settings-row" data-qi-id="${id}" data-qi-idx="${idx}">
             <span class="sf-qi-drag-handle">&#9776;</span>
-            <input type="checkbox" class="sf-qi-toggle" data-qi-id="${item.id}" ${item.enabled ? 'checked' : ''}>
-            <span class="sf-qi-preview">${item.name}</span>
-            <span class="sf-qi-desc">${item.description || ''}</span>
-            <button class="sf-qi-edit-btn fa-solid fa-pen" data-qi-id="${item.id}" title="Edit"></button>
-            <button class="sf-qi-del-btn fa-solid fa-trash" data-qi-id="${item.id}" title="Delete"></button>
+            <input type="checkbox" class="sf-qi-toggle" data-qi-id="${id}" ${item.enabled ? 'checked' : ''}>
+            <span class="sf-qi-preview">${escapeHtml(item.name)}</span>
+            <span class="sf-qi-desc">${escapeHtml(item.description || '')}</span>
+            <button class="sf-qi-edit-btn fa-solid fa-pen" data-qi-id="${id}" title="Edit"></button>
+            <button class="sf-qi-del-btn fa-solid fa-trash" data-qi-id="${id}" title="Delete"></button>
         </div>
-    `).join('');
+    `;
+    }).join('');
 
     container.html(rows);
 
@@ -606,7 +686,7 @@ function updateBadge() {
     const tags = [...activeInjections.keys()].map(id => {
         const t = tools.find(x => x.id === id);
         if (!t) return '';
-        return `<span class="storyforge-active-tag"><i class="${t.icon}" style="font-size:11px"></i> ${t.label} <span class="storyforge-tag-remove fa-solid fa-xmark" data-tool="${id}"></span></span>`;
+        return `<span class="storyforge-active-tag"><i class="${escapeHtml(sanitizeIcon(t.icon))}" style="font-size:11px"></i> ${escapeHtml(t.label)} <span class="storyforge-tag-remove fa-solid fa-xmark" data-tool="${escapeHtml(id)}"></span></span>`;
     }).join('');
     const badge = $(`<div id="storyforge-active-badge" class="storyforge-active-badge">
         <div class="storyforge-active-badge-header">
@@ -636,10 +716,11 @@ function buildPopupHtml() {
 
     const toolButtons = tools.map(t => {
         const isActive = activeInjections.has(t.id) ? ' storyforge-active' : '';
-        return `<div class="storyforge-tool-btn${isActive}" data-tool="${t.id}">
-            <span class="storyforge-tool-icon"><i class="${t.icon}"></i></span>
-            <span class="storyforge-tool-label">${t.label}</span>
-            <span class="storyforge-tool-delete fa-solid fa-xmark" data-deletetool="${t.id}" title="Delete"></span>
+        const id = escapeHtml(t.id);
+        return `<div class="storyforge-tool-btn${isActive}" data-tool="${id}">
+            <span class="storyforge-tool-icon"><i class="${escapeHtml(sanitizeIcon(t.icon))}"></i></span>
+            <span class="storyforge-tool-label">${escapeHtml(t.label)}</span>
+            <span class="storyforge-tool-delete fa-solid fa-xmark" data-deletetool="${id}" title="Delete"></span>
         </div>`;
     }).join('');
 
@@ -656,14 +737,15 @@ function buildPopupHtml() {
     </div>`;
 
     const promptEditors = tools.map(t => {
+        const id = escapeHtml(t.id);
         return `<div class="storyforge-prompt-item">
-            <div class="sf-prompt-label" data-tool="${t.id}">
-                <i class="${t.icon}"></i>
-                <span class="sf-label-text">${t.label}</span>
+            <div class="sf-prompt-label" data-tool="${id}">
+                <i class="${escapeHtml(sanitizeIcon(t.icon))}"></i>
+                <span class="sf-label-text">${escapeHtml(t.label)}</span>
                 <i class="fa-solid fa-pen" style="font-size:9px"></i>
                 <span class="sf-rename-hint">click to rename</span>
             </div>
-            <textarea class="sf-prompt-edit" data-tool="${t.id}" placeholder="${(t.prompt || '').substring(0, 100)}...">${t.prompt || ''}</textarea>
+            <textarea class="sf-prompt-edit" data-tool="${id}" placeholder="${escapeHtml((t.prompt || '').substring(0, 100))}...">${escapeHtml(t.prompt || '')}</textarea>
         </div>`;
     }).join('');
 
@@ -772,13 +854,14 @@ async function openStoryForgePopup() {
             const toolId = $(this).data('tool');
             const labelEl = $(this).find('.sf-label-text');
             const currentName = labelEl.text();
-            const input = $(`<input type="text" class="sf-rename-input" value="${currentName}" maxlength="40">`);
+            const input = $('<input type="text" class="sf-rename-input" maxlength="40">').val(currentName);
             labelEl.replaceWith(input);
             input.focus().select();
             const finish = () => {
                 const newName = input.val().trim() || currentName;
                 renameTool(toolId, newName);
-                input.replaceWith(`<span class="sf-label-text">${newName}</span>`);
+                const span = $('<span class="sf-label-text"></span>').text(newName);
+                input.replaceWith(span);
             };
             input.on('blur', finish);
             input.on('keydown', function (e) {
@@ -926,6 +1009,10 @@ function registerSlashCommands() {
 jQuery(async () => {
     console.log(`[${MODULE_NAME}] Loading v3.5...`);
     try {
+        // Namespaced + .off() so re-loads don't stack handlers.
+        $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
+            lastFocusedEditable = this;
+        });
         addMenuButton();
         registerSlashCommands();
         addQuickInsertSettingsPanel();
