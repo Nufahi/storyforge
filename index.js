@@ -180,15 +180,38 @@ function deleteQuickInsert(id) {
     saveSettings();
 }
 
+// Track the last focused editable textarea/input so quick inserts can target
+// it even after the bar button steals focus on click.
+let lastFocusedEditable = null;
+$(document).on('focusin', 'textarea, input[type="text"]', function () {
+    lastFocusedEditable = this;
+});
+
+function isEditable(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName === 'INPUT' && $(el).prop('type') === 'text') return true;
+    return false;
+}
+
 function clickQuickInsert(button) {
-    const activeEl = document.activeElement;
-    const possibleTextarea = activeEl?.tagName === 'IFRAME'
-        ? activeEl.contentDocument?.activeElement
-        : activeEl;
-    const $textarea = (possibleTextarea && (possibleTextarea.tagName === 'TEXTAREA' ||
-        (possibleTextarea.tagName === 'INPUT' && $(possibleTextarea).prop('type') === 'text')))
-        ? $(possibleTextarea)
-        : $('#send_textarea');
+    // Priority 1: remembered last-focused editable (works for message edit boxes
+    // since the bar button steals focus before the click handler runs).
+    let target = isEditable(lastFocusedEditable) && document.body.contains(lastFocusedEditable)
+        ? lastFocusedEditable
+        : null;
+
+    // Priority 2: currently focused element (handles iframe case).
+    if (!target) {
+        const activeEl = document.activeElement;
+        const possibleTextarea = activeEl?.tagName === 'IFRAME'
+            ? activeEl.contentDocument?.activeElement
+            : activeEl;
+        if (isEditable(possibleTextarea)) target = possibleTextarea;
+    }
+
+    // Fallback: main send textarea.
+    const $textarea = target ? $(target) : $('#send_textarea');
     if ($textarea.length === 0) return;
 
     const textareaEl = $textarea[0];
@@ -298,6 +321,12 @@ function renderQuickInsertBar() {
     } else {
         $('body').append(bar);
     }
+
+    // Prevent the button from stealing focus from the currently focused
+    // textarea/input (e.g. the message edit box), so quick insert can target it.
+    bar.on('mousedown', '.sf-qi-btn', function (e) {
+        e.preventDefault();
+    });
 
     bar.on('click', '.sf-qi-btn', function (e) {
         e.preventDefault();
