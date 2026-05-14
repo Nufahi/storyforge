@@ -1194,7 +1194,7 @@ function ccGetLastBotMessageEl() {
     return $mes.length ? $mes : null;
 }
 
-function ccRenderCards(choices, messageId) {
+function ccRenderCards(choices, messageId, elapsedMs) {
     ccRemoveCards();
     if (!Array.isArray(choices) || choices.length === 0) return;
 
@@ -1220,6 +1220,13 @@ function ccRenderCards(choices, messageId) {
 
     const collapsedClass = s.ccCollapsed ? ' sf-cc-collapsed' : '';
     const count = choices.length;
+    const durationStr = Number.isFinite(elapsedMs) ? ccFormatDuration(elapsedMs) : '';
+    const durationBadge = durationStr
+        ? `<span class="sf-cc-duration" title="Generation time">
+               <i class="fa-solid fa-stopwatch"></i> ${escapeHtml(durationStr)}
+           </span>`
+        : '';
+
     const wrap = $(`
         <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}${collapsedClass}"
              data-cc-message-id="${escapeHtml(String(messageId ?? ''))}">
@@ -1228,6 +1235,7 @@ function ccRenderCards(choices, messageId) {
                 <i class="fa-solid fa-comments sf-cc-header-icon"></i>
                 <span class="sf-cc-header-label">Choose your action</span>
                 <span class="sf-cc-count-badge">${count}</span>
+                ${durationBadge}
                 <span class="sf-cc-spacer"></span>
                 <button class="sf-cc-regen menu_button" title="Regenerate choices" tabindex="-1">
                     <i class="fa-solid fa-arrows-rotate"></i>
@@ -1285,6 +1293,17 @@ function ccApplyChoice(choice) {
 
 // === Main entry point =======================================================
 
+function ccFormatDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return `${ms}ms`;
+    const s = ms / 1000;
+    if (s < 10) return `${s.toFixed(1)}s`;
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = Math.floor(s / 60);
+    const r = Math.round(s % 60);
+    return `${m}m ${r}s`;
+}
+
 async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
     if (ccGenerationInProgress) return;
     const s = ccGetSettings();
@@ -1293,14 +1312,37 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         return;
     }
     ccGenerationInProgress = true;
+
+    const startedAt = performance.now();
     const $host = ccGetLastBotMessageEl();
     let $placeholder = null;
+    let tickHandle = null;
+
     if ($host) {
-        $placeholder = $(`<div class="sf-cc-wrap sf-cc-loading sf-cc-style-${escapeHtml(s.ccStyle)}">
-            <div class="sf-cc-header"><i class="fa-solid fa-spinner fa-spin"></i> <span>Generating choices…</span></div>
-        </div>`);
+        // Live timer placeholder. Free mode (parse) is usually < 50 ms so we
+        // still show the placeholder briefly — confirms to the user that
+        // something happened even if generation was instant.
+        $placeholder = $(`
+            <div class="sf-cc-wrap sf-cc-loading sf-cc-style-${escapeHtml(s.ccStyle)}">
+                <div class="sf-cc-header">
+                    <i class="fa-solid fa-spinner fa-spin sf-cc-header-icon"></i>
+                    <span class="sf-cc-header-label">Generating choices</span>
+                    <span class="sf-cc-timer" aria-live="polite">0.0s</span>
+                    <span class="sf-cc-spacer"></span>
+                    <button class="sf-cc-close menu_button" title="Cancel display" tabindex="-1">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+        `);
         ccRemoveCards();
         $host.after($placeholder);
+
+        const $timer = $placeholder.find('.sf-cc-timer');
+        tickHandle = setInterval(() => {
+            const elapsed = performance.now() - startedAt;
+            $timer.text(ccFormatDuration(Math.round(elapsed)));
+        }, 100);
     }
     try {
         let choices = null;
@@ -1316,14 +1358,19 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         if (!choices && (s.ccMode === 'request' || s.ccMode === 'hybrid')) {
             choices = await ccRequestChoices();
         }
+
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
         if ($placeholder) $placeholder.remove();
+
         if (!choices) {
             if (!silent) toastr.warning('Could not generate choices', 'StoryForge', { timeOut: 2500 });
             return;
         }
-        ccRenderCards(choices.slice(0, s.ccCount), messageId);
+        ccRenderCards(choices.slice(0, s.ccCount), messageId, elapsedMs);
     } catch (err) {
         console.error(`[${MODULE_NAME}] Choice Cards error`, err);
+        if (tickHandle) clearInterval(tickHandle);
         if ($placeholder) $placeholder.remove();
         if (!silent) toastr.error('Choice generation failed (see console)', 'StoryForge');
     } finally {
@@ -1620,7 +1667,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.2.0 (Choice Cards: collapsible + theme-adaptive)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.2.1 (Choice Cards: timer + mobile)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -1647,7 +1694,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.2.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.2.1 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
