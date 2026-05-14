@@ -65,6 +65,17 @@ const defaultSettings = Object.freeze({
     quickInserts: null,
     qiBarVisible: true,
     sendBarButton: true,
+    // ==== Choice Cards ====
+    ccEnabled: true,
+    ccAuto: false,                      // generate automatically after every bot reply
+    ccMode: 'request',                  // 'request' | 'parse' | 'hybrid'
+    ccCount: 3,                         // 2..6
+    ccStyle: 'vn-classic',              // 'vn-classic' | 'minimal' | 'neon' | 'parchment'
+    ccReveal: 'hover',                  // 'hover' | 'always' | 'tooltip'
+    ccProfile: '',                      // connection profile name; '' = current
+    ccClickAction: 'insert',            // 'insert' | 'send'
+    ccCustomPrompt: '',                 // overrides default generation template
+    ccSendBarButton: true,
 });
 
 function getSettings() {
@@ -1004,10 +1015,568 @@ function registerSlashCommands() {
     } catch (e) { /* already registered */ }
 }
 
+// ============================================================================
+// ==== Choice Cards =========================================================
+// ============================================================================
+
+const CC_TAG_OPEN = '<choices>';
+const CC_TAG_CLOSE = '</choices>';
+const CC_MAX_NAME = 80;
+const CC_MAX_DESC = 400;
+const CC_VALID_STYLES = ['vn-classic', 'minimal', 'neon', 'parchment'];
+const CC_VALID_MODES = ['request', 'parse', 'hybrid'];
+const CC_VALID_REVEAL = ['hover', 'always', 'tooltip'];
+
+// Avoid double-runs: when user clicks the manual button we don't want the
+// CHARACTER_MESSAGE_RENDERED hook to fire on top of it.
+let ccGenerationInProgress = false;
+let ccLastMessageId = null;
+
+function ccGetSettings() {
+    const s = getSettings();
+    // Clamp / normalize on every read so bad imports can't break anything.
+    if (!CC_VALID_STYLES.includes(s.ccStyle)) s.ccStyle = 'vn-classic';
+    if (!CC_VALID_MODES.includes(s.ccMode)) s.ccMode = 'request';
+    if (!CC_VALID_REVEAL.includes(s.ccReveal)) s.ccReveal = 'hover';
+    s.ccCount = Math.min(Math.max(parseInt(s.ccCount, 10) || 3, 2), 6);
+    return s;
+}
+
+function ccBuildPromptTemplate(count) {
+    const s = ccGetSettings();
+    if (s.ccCustomPrompt && s.ccCustomPrompt.trim()) {
+        return s.ccCustomPrompt.replace(/\{\{count\}\}/g, String(count));
+    }
+    return (
+        `[StoryForge: Choice Cards] Based on the current scene and the most recent reply, suggest ${count} distinct, in-character actions the user could take next. ` +
+        `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
+        '```json\n' +
+        `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what the user does, how they sound, and the likely immediate consequence."}]}\n` +
+        '```\n' +
+        `Rules: ${count} entries, written from the user's perspective in second person, no duplicates, no meta-commentary, no quotes around the JSON.`
+    );
+}
+
+// === Parsing ================================================================
+
+// Strip everything that looks like a fenced code block start/end so we can be
+// liberal with what the model returns. Accepts ```json ... ```, ``` ... ```,
+// <choices>...</choices>, or just a raw JSON object.
+function ccExtractJson(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    // 1. Custom XML-style tag.
+    const tagStart = text.indexOf(CC_TAG_OPEN);
+    if (tagStart !== -1) {
+        const tagEnd = text.indexOf(CC_TAG_CLOSE, tagStart);
+        if (tagEnd !== -1) {
+            return text.substring(tagStart + CC_TAG_OPEN.length, tagEnd).trim();
+        }
+    }
+
+    // 2. Fenced code block (```json ... ``` or ``` ... ```).
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch) return fenceMatch[1].trim();
+
+    // 3. First balanced { ... } in the string.
+    const firstBrace = text.indexOf('{');
+    if (firstBrace !== -1) {
+        let depth = 0;
+        let inStr = false;
+        let esc = false;
+        for (let i = firstBrace; i < text.length; i++) {
+            const ch = text[i];
+            if (esc) { esc = false; continue; }
+            if (ch === '\\') { esc = true; continue; }
+            if (ch === '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) return text.substring(firstBrace, i + 1);
+            }
+        }
+    }
+    return null;
+}
+
+function ccParseChoices(rawText) {
+    const jsonStr = ccExtractJson(rawText);
+    if (!jsonStr) return null;
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch {
+        return null;
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const list = Array.isArray(parsed.choices) ? parsed.choices
+        : Array.isArray(parsed) ? parsed
+        : null;
+    if (!list || list.length === 0) return null;
+
+    const cleaned = [];
+    for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        const name = typeof item.name === 'string' ? item.name.trim().slice(0, CC_MAX_NAME)
+            : typeof item.title === 'string' ? item.title.trim().slice(0, CC_MAX_NAME)
+            : '';
+        if (!name) continue;
+        const description = typeof item.description === 'string'
+            ? item.description.trim().slice(0, CC_MAX_DESC)
+            : typeof item.detail === 'string'
+            ? item.detail.trim().slice(0, CC_MAX_DESC)
+            : '';
+        cleaned.push({ name, description });
+        if (cleaned.length >= 6) break;
+    }
+    return cleaned.length >= 2 ? cleaned : null;
+}
+
+// === Generation =============================================================
+
+// Resolve a connection profile name to a callable that returns a Promise<string>.
+// We try the SillyTavern Connection Manager API first, then fall back to
+// generateQuietPrompt on the current profile.
+async function ccGenerateWithLLM(prompt, profileName) {
+    const ctx = SillyTavern.getContext();
+    const trimmedProfile = (profileName || '').trim();
+
+    if (trimmedProfile) {
+        // Try the Connection Manager slash command via executeSlashCommandsWithOptions.
+        // /profile <name> switches; we instead use /genraw with profile= when available.
+        try {
+            const escaped = trimmedProfile.replace(/"/g, '\\"');
+            const cmd = `/genraw profile="${escaped}" instruct=off ${JSON.stringify(prompt)}`;
+            if (typeof ctx.executeSlashCommandsWithOptions === 'function') {
+                const res = await ctx.executeSlashCommandsWithOptions(cmd, { showOutput: false });
+                if (res?.pipe) return String(res.pipe);
+            }
+        } catch (err) {
+            console.warn(`[${MODULE_NAME}] Choice Cards: profile fallback`, err);
+        }
+    }
+
+    // Standard quiet-prompt fallback.
+    if (typeof ctx.generateQuietPrompt === 'function') {
+        return await ctx.generateQuietPrompt({ quietPrompt: prompt, skipWIAN: false });
+    }
+    // Some ST versions expose it as a positional arg.
+    if (typeof ctx.generateRaw === 'function') {
+        return await ctx.generateRaw({ prompt, systemPrompt: '' });
+    }
+    throw new Error('No suitable text-generation API found on SillyTavern context');
+}
+
+async function ccRequestChoices() {
+    const s = ccGetSettings();
+    const prompt = ccBuildPromptTemplate(s.ccCount);
+    const raw = await ccGenerateWithLLM(prompt, s.ccProfile);
+    return ccParseChoices(raw);
+}
+
+// === Rendering ==============================================================
+
+function ccRemoveCards() {
+    $('.sf-cc-wrap').remove();
+}
+
+function ccGetLastBotMessageEl() {
+    // Last rendered message that is NOT from the user, NOT a system message.
+    const $mes = $('#chat .mes').filter(function () {
+        const isUser = $(this).attr('is_user') === 'true';
+        const isSys = $(this).attr('is_system') === 'true';
+        return !isUser && !isSys;
+    }).last();
+    return $mes.length ? $mes : null;
+}
+
+function ccRenderCards(choices, messageId) {
+    ccRemoveCards();
+    if (!Array.isArray(choices) || choices.length === 0) return;
+
+    const s = ccGetSettings();
+    const $host = ccGetLastBotMessageEl();
+    if (!$host) return;
+
+    const cards = choices.map((c, idx) => {
+        const name = escapeHtml(c.name);
+        const desc = escapeHtml(c.description || '');
+        const titleAttr = s.ccReveal === 'tooltip' && desc ? ` title="${desc}"` : '';
+        return `
+        <div class="sf-cc-card" data-cc-idx="${idx}" tabindex="0" role="button"${titleAttr}>
+            <div class="sf-cc-card-index">${idx + 1}</div>
+            <div class="sf-cc-card-body">
+                <div class="sf-cc-card-name">${name}</div>
+                ${desc && s.ccReveal !== 'tooltip'
+                    ? `<div class="sf-cc-card-desc">${desc}</div>`
+                    : ''}
+            </div>
+        </div>`;
+    }).join('');
+
+    const wrap = $(`
+        <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}"
+             data-cc-message-id="${escapeHtml(String(messageId ?? ''))}">
+            <div class="sf-cc-header">
+                <i class="fa-solid fa-comments"></i>
+                <span class="sf-cc-header-label">Choose your action</span>
+                <span class="sf-cc-spacer"></span>
+                <button class="sf-cc-regen" title="Regenerate choices" tabindex="-1">
+                    <i class="fa-solid fa-arrows-rotate"></i>
+                </button>
+                <button class="sf-cc-close" title="Dismiss" tabindex="-1">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="sf-cc-grid">${cards}</div>
+        </div>
+    `);
+
+    $host.append(wrap);
+    // Store choice data on DOM so click handler doesn't need a closure.
+    wrap.data('cc-choices', choices);
+
+    // Scroll the new block into view if the user is near the bottom.
+    const chat = document.getElementById('chat');
+    if (chat) {
+        const distanceFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+        if (distanceFromBottom < 200) {
+            requestAnimationFrame(() => { chat.scrollTop = chat.scrollHeight; });
+        }
+    }
+}
+
+// === Insertion ==============================================================
+
+function ccApplyChoice(choice) {
+    const s = ccGetSettings();
+    const $textarea = $('#send_textarea');
+    if (!$textarea.length) return;
+
+    const current = $textarea.val() || '';
+    const insertion = choice.name;
+    // If textarea is empty: just set it. Otherwise append with a separating space.
+    const sep = current.length === 0 || /\s$/.test(current) ? '' : ' ';
+    $textarea.val(current + sep + insertion);
+    $textarea.trigger('input');
+    $textarea.focus();
+    try {
+        const pos = $textarea.val().length;
+        $textarea[0].setSelectionRange(pos, pos);
+    } catch { /* ignore */ }
+
+    if (s.ccClickAction === 'send') {
+        // Trigger the actual send button if exists.
+        const sendBtn = document.getElementById('send_but');
+        if (sendBtn) sendBtn.click();
+    }
+}
+
+// === Main entry point =======================================================
+
+async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
+    if (ccGenerationInProgress) return;
+    const s = ccGetSettings();
+    if (!s.ccEnabled) {
+        if (!silent) toastr.warning('Choice Cards are disabled', 'StoryForge');
+        return;
+    }
+    ccGenerationInProgress = true;
+    const $host = ccGetLastBotMessageEl();
+    let $placeholder = null;
+    if ($host) {
+        $placeholder = $(`<div class="sf-cc-wrap sf-cc-loading sf-cc-style-${escapeHtml(s.ccStyle)}">
+            <div class="sf-cc-header"><i class="fa-solid fa-spinner fa-spin"></i> <span>Generating choices…</span></div>
+        </div>`);
+        ccRemoveCards();
+        $host.append($placeholder);
+    }
+    try {
+        let choices = null;
+
+        if (s.ccMode === 'parse' || s.ccMode === 'hybrid') {
+            // Try to find an embedded JSON block in the last bot message text.
+            const ctx = SillyTavern.getContext();
+            const lastMes = ctx.chat?.[ctx.chat.length - 1];
+            if (lastMes && !lastMes.is_user && !lastMes.is_system) {
+                choices = ccParseChoices(lastMes.mes || '');
+            }
+        }
+        if (!choices && (s.ccMode === 'request' || s.ccMode === 'hybrid')) {
+            choices = await ccRequestChoices();
+        }
+        if ($placeholder) $placeholder.remove();
+        if (!choices) {
+            if (!silent) toastr.warning('Could not generate choices', 'StoryForge', { timeOut: 2500 });
+            return;
+        }
+        ccRenderCards(choices.slice(0, s.ccCount), messageId);
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] Choice Cards error`, err);
+        if ($placeholder) $placeholder.remove();
+        if (!silent) toastr.error('Choice generation failed (see console)', 'StoryForge');
+    } finally {
+        ccGenerationInProgress = false;
+    }
+}
+
+// === Event wiring ===========================================================
+
+function ccBindCardEvents() {
+    // Delegated so it survives re-renders.
+    $(document).off('click.sf-cc');
+    $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
+        // Avoid double-firing when clicking inner elements.
+        e.preventDefault();
+        const $wrap = $(this).closest('.sf-cc-wrap');
+        const choices = $wrap.data('cc-choices');
+        const idx = parseInt($(this).attr('data-cc-idx'), 10);
+        if (!Array.isArray(choices) || !Number.isInteger(idx)) return;
+        const choice = choices[idx];
+        if (!choice) return;
+        ccApplyChoice(choice);
+        $wrap.addClass('sf-cc-fading');
+        setTimeout(() => $wrap.remove(), 250);
+    });
+
+    $(document).on('keydown.sf-cc', '.sf-cc-card', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            $(this).trigger('click');
+        }
+    });
+
+    $(document).on('click.sf-cc-close', '.sf-cc-close', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        $(this).closest('.sf-cc-wrap').remove();
+    });
+
+    $(document).on('click.sf-cc-regen', '.sf-cc-regen', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        ccGenerateAndRender({ silent: false });
+    });
+}
+
+function ccBindStEvents() {
+    const { eventSource, event_types } = SillyTavern.getContext();
+
+    // Auto-generate after each bot reply (only if ccAuto is enabled).
+    // In 'parse' mode this is essentially free (no extra LLM call), so users
+    // typically want ccAuto + ccMode='parse' together.
+    const onBotMessage = (msgId) => {
+        const s = ccGetSettings();
+        if (!s.ccEnabled || !s.ccAuto) return;
+        ccLastMessageId = msgId;
+        // Defer so the message DOM is fully rendered.
+        setTimeout(() => ccGenerateAndRender({ silent: true, messageId: msgId }), 50);
+    };
+
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onBotMessage);
+
+    // Drop cards when user sends a new message, swipes, or generation starts.
+    const dropCards = () => ccRemoveCards();
+    eventSource.on(event_types.MESSAGE_SENT, dropCards);
+    eventSource.on(event_types.GENERATION_STARTED, dropCards);
+    eventSource.on(event_types.MESSAGE_SWIPED, dropCards);
+    eventSource.on(event_types.MESSAGE_DELETED, dropCards);
+    eventSource.on(event_types.CHAT_CHANGED, dropCards);
+}
+
+// === Send-bar button ========================================================
+
+function ccUpdateSendBarButton() {
+    $('#sf-cc-sendbar-btn').remove();
+    const s = ccGetSettings();
+    if (!s.ccSendBarButton || !s.ccEnabled) return;
+
+    const btn = $(`<div id="sf-cc-sendbar-btn" class="sf-sendbar-btn interactable" title="Generate Choice Cards (StoryForge)">
+        <i class="fa-solid fa-comments"></i>
+    </div>`);
+    btn.on('click', (e) => {
+        e.preventDefault();
+        ccGenerateAndRender({ silent: false });
+    });
+
+    const optionsBtn = $('#options_button');
+    const sfBtn = $('#sf-sendbar-btn');
+    if (sfBtn.length) sfBtn.before(btn);
+    else if (optionsBtn.length) optionsBtn.before(btn);
+}
+
+// === Settings panel (extensions_settings2) ==================================
+
+function ccAddSettingsPanel() {
+    if ($('#sf-cc-panel').length) return;
+    const s = ccGetSettings();
+
+    const styleOptions = [
+        ['vn-classic', 'VN Classic'],
+        ['minimal',    'Minimal'],
+        ['neon',       'Neon'],
+        ['parchment',  'Parchment'],
+    ].map(([v, l]) => `<option value="${v}" ${s.ccStyle === v ? 'selected' : ''}>${l}</option>`).join('');
+
+    const modeOptions = [
+        ['request', 'Separate LLM request'],
+        ['parse',   'Parse JSON from reply'],
+        ['hybrid',  'Hybrid (parse → request)'],
+    ].map(([v, l]) => `<option value="${v}" ${s.ccMode === v ? 'selected' : ''}>${l}</option>`).join('');
+
+    const revealOptions = [
+        ['hover',   'Reveal on hover'],
+        ['always',  'Always visible'],
+        ['tooltip', 'Tooltip only'],
+    ].map(([v, l]) => `<option value="${v}" ${s.ccReveal === v ? 'selected' : ''}>${l}</option>`).join('');
+
+    const panel = $(`
+        <div id="sf-cc-panel" class="sf-qi-panel">
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b><i class="fa-solid fa-comments"></i> StoryForge - Choice Cards</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="sf-qi-info">Generate visual-novel style action choices under the latest bot message.</div>
+
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-enabled" ${s.ccEnabled ? 'checked' : ''}>
+                        <label for="sf-cc-enabled">Enable Choice Cards</label>
+                    </div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-auto" ${s.ccAuto ? 'checked' : ''}>
+                        <label for="sf-cc-auto">Auto-generate after every bot reply</label>
+                    </div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-sendbtn" ${s.ccSendBarButton ? 'checked' : ''}>
+                        <label for="sf-cc-sendbtn">Show button in send bar</label>
+                    </div>
+
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-mode">Generation mode</label>
+                        <select id="sf-cc-mode">${modeOptions}</select>
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-style">Visual style</label>
+                        <select id="sf-cc-style">${styleOptions}</select>
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-reveal">Description display</label>
+                        <select id="sf-cc-reveal">${revealOptions}</select>
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-count">Number of choices (2-6)</label>
+                        <input type="number" id="sf-cc-count" min="2" max="6" value="${s.ccCount}">
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-profile">Connection profile (empty = current)</label>
+                        <input type="text" id="sf-cc-profile" value="${escapeHtml(s.ccProfile || '')}" placeholder="e.g. small-model">
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-clickaction">On click</label>
+                        <select id="sf-cc-clickaction">
+                            <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>Insert into input</option>
+                            <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>Insert and send</option>
+                        </select>
+                    </div>
+                    <div class="sf-cc-form-row sf-cc-form-row-block">
+                        <label for="sf-cc-custom">Custom prompt template (optional, use {{count}})</label>
+                        <textarea id="sf-cc-custom" rows="4" placeholder="Leave empty to use the default template">${escapeHtml(s.ccCustomPrompt || '')}</textarea>
+                    </div>
+
+                    <div class="sf-qi-actions">
+                        <button id="sf-cc-test" class="menu_button"><i class="fa-solid fa-flask"></i> Test generation</button>
+                        <button id="sf-cc-clear" class="menu_button"><i class="fa-solid fa-broom"></i> Clear visible cards</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    $('#extensions_settings2').append(panel);
+
+    panel.on('change', '#sf-cc-enabled', function () {
+        ccGetSettings().ccEnabled = $(this).is(':checked');
+        saveSettings();
+        ccUpdateSendBarButton();
+    });
+    panel.on('change', '#sf-cc-auto', function () {
+        ccGetSettings().ccAuto = $(this).is(':checked');
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-sendbtn', function () {
+        ccGetSettings().ccSendBarButton = $(this).is(':checked');
+        saveSettings();
+        ccUpdateSendBarButton();
+    });
+    panel.on('change', '#sf-cc-mode', function () {
+        ccGetSettings().ccMode = $(this).val();
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-style', function () {
+        ccGetSettings().ccStyle = $(this).val();
+        saveSettings();
+        // Re-style any visible cards.
+        $('.sf-cc-wrap')
+            .removeClass(CC_VALID_STYLES.map(x => `sf-cc-style-${x}`).join(' '))
+            .addClass(`sf-cc-style-${ccGetSettings().ccStyle}`);
+    });
+    panel.on('change', '#sf-cc-reveal', function () {
+        ccGetSettings().ccReveal = $(this).val();
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-count', function () {
+        ccGetSettings().ccCount = parseInt($(this).val(), 10) || 3;
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-profile', function () {
+        ccGetSettings().ccProfile = $(this).val();
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-clickaction', function () {
+        ccGetSettings().ccClickAction = $(this).val();
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-custom', function () {
+        ccGetSettings().ccCustomPrompt = $(this).val();
+        saveSettings();
+    });
+    panel.on('click', '#sf-cc-test', () => ccGenerateAndRender({ silent: false }));
+    panel.on('click', '#sf-cc-clear', () => ccRemoveCards());
+}
+
+// === Slash commands =========================================================
+
+function ccRegisterSlashCommands() {
+    const ctx = SillyTavern.getContext();
+    const { SlashCommandParser, SlashCommand } = ctx;
+    if (!SlashCommandParser || !SlashCommand) return;
+
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'sf-choices',
+            callback: () => { ccGenerateAndRender({ silent: false }); return 'Choice generation started'; },
+            helpString: '<div>StoryForge: generate choice cards under the last bot message.</div>',
+        }));
+    } catch { /* already registered */ }
+
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'sf-choices-clear',
+            callback: () => { ccRemoveCards(); return 'Cleared'; },
+            helpString: '<div>StoryForge: clear visible choice cards.</div>',
+        }));
+    } catch { /* already registered */ }
+}
+
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v3.5...`);
+    console.log(`[${MODULE_NAME}] Loading v1.1.0 (Choice Cards)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -1018,6 +1587,12 @@ jQuery(async () => {
         addQuickInsertSettingsPanel();
         renderQuickInsertBar();
         updateSendBarButton();
+        // ==== Choice Cards ====
+        ccAddSettingsPanel();
+        ccUpdateSendBarButton();
+        ccBindCardEvents();
+        ccBindStEvents();
+        ccRegisterSlashCommands();
         const { eventSource, event_types } = SillyTavern.getContext();
         eventSource.on(event_types.GENERATION_ENDED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) {
@@ -1028,7 +1603,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v3.5 loaded`);
+        console.log(`[${MODULE_NAME}] v1.1.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

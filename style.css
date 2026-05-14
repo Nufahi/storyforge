@@ -517,3 +517,302 @@
 .sf-sendbar-btn:hover {
     opacity: 1;
 }
+
+/* ============================================================
+   Choice Cards
+   ============================================================ */
+
+.sf-cc-wrap {
+    --sf-cc-bg: rgba(20, 22, 28, .55);
+    --sf-cc-bg-hover: rgba(35, 38, 48, .85);
+    --sf-cc-border: var(--SmartThemeBorderColor, #4a4a55);
+    --sf-cc-border-hover: var(--SmartThemeQuoteColor, #c9a961);
+    --sf-cc-accent: var(--SmartThemeQuoteColor, #c9a961);
+    --sf-cc-text: var(--SmartThemeBodyColor, #e8e8ec);
+    --sf-cc-text-dim: rgba(232, 232, 236, .65);
+    --sf-cc-radius: 12px;
+    --sf-cc-glow: 0 0 16px rgba(201, 169, 97, .25);
+    --sf-cc-font: inherit;
+
+    margin: 14px 4px 6px 4px;
+    padding: 12px 14px 14px 14px;
+    background: var(--sf-cc-bg);
+    border: 1px solid var(--sf-cc-border);
+    border-radius: var(--sf-cc-radius);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    font-family: var(--sf-cc-font);
+    color: var(--sf-cc-text);
+    animation: sf-cc-fade-in .35s ease-out;
+    transition: opacity .25s ease;
+}
+
+.sf-cc-wrap.sf-cc-fading {
+    opacity: 0;
+    transform: translateY(-4px);
+    pointer-events: none;
+}
+
+@keyframes sf-cc-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.sf-cc-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--sf-cc-text-dim);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--sf-cc-border);
+}
+.sf-cc-header i { color: var(--sf-cc-accent); font-size: 12px; }
+.sf-cc-header-label { font-weight: 600; }
+.sf-cc-spacer { flex: 1; }
+.sf-cc-header button {
+    background: transparent;
+    border: none;
+    color: var(--sf-cc-text-dim);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: color .15s, background .15s;
+}
+.sf-cc-header button:hover {
+    color: var(--sf-cc-accent);
+    background: rgba(255, 255, 255, .06);
+}
+
+.sf-cc-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+}
+
+@media (min-width: 720px) {
+    .sf-cc-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.sf-cc-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    background: linear-gradient(135deg, rgba(255,255,255,.02), rgba(255,255,255,.06));
+    border: 1px solid var(--sf-cc-border);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color .2s ease, background .2s ease, transform .15s ease, box-shadow .2s ease;
+    outline: none;
+    position: relative;
+    overflow: hidden;
+}
+
+.sf-cc-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(135deg, transparent 0%, rgba(201,169,97,.06) 100%);
+    opacity: 0;
+    transition: opacity .25s ease;
+}
+
+.sf-cc-card:hover,
+.sf-cc-card:focus-visible {
+    border-color: var(--sf-cc-border-hover);
+    background: var(--sf-cc-bg-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--sf-cc-glow);
+}
+.sf-cc-card:hover::before,
+.sf-cc-card:focus-visible::before { opacity: 1; }
+.sf-cc-card:active { transform: translateY(0); }
+
+.sf-cc-card-index {
+    flex: 0 0 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(0,0,0,.35);
+    border: 1px solid var(--sf-cc-border);
+    color: var(--sf-cc-accent);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+    transition: border-color .2s, background .2s;
+}
+.sf-cc-card:hover .sf-cc-card-index,
+.sf-cc-card:focus-visible .sf-cc-card-index {
+    border-color: var(--sf-cc-accent);
+    background: rgba(201,169,97,.15);
+}
+
+.sf-cc-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.sf-cc-card-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--sf-cc-text);
+}
+
+.sf-cc-card-desc {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--sf-cc-text-dim);
+}
+
+/* === Reveal: hover === */
+.sf-cc-reveal-hover .sf-cc-card-desc {
+    max-height: 0;
+    margin-top: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height .35s ease, opacity .25s ease, margin-top .2s ease;
+}
+.sf-cc-reveal-hover .sf-cc-card:hover .sf-cc-card-desc,
+.sf-cc-reveal-hover .sf-cc-card:focus-visible .sf-cc-card-desc {
+    max-height: 200px;
+    margin-top: 6px;
+    opacity: 1;
+}
+
+/* === Loading placeholder === */
+.sf-cc-wrap.sf-cc-loading .sf-cc-header {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+/* ============================================================
+   Style presets
+   ============================================================ */
+
+/* --- VN Classic (default) --- already set on .sf-cc-wrap */
+
+/* --- Minimal --- */
+.sf-cc-wrap.sf-cc-style-minimal {
+    --sf-cc-bg: transparent;
+    --sf-cc-bg-hover: rgba(255,255,255,.04);
+    --sf-cc-accent: var(--SmartThemeBodyColor, #ccc);
+    --sf-cc-glow: none;
+    --sf-cc-radius: 6px;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: transparent;
+    border-style: dashed;
+}
+.sf-cc-wrap.sf-cc-style-minimal .sf-cc-card {
+    background: transparent;
+    border-radius: 6px;
+}
+.sf-cc-wrap.sf-cc-style-minimal .sf-cc-card-index {
+    background: transparent;
+}
+
+/* --- Neon --- */
+.sf-cc-wrap.sf-cc-style-neon {
+    --sf-cc-bg: rgba(10, 12, 24, .7);
+    --sf-cc-bg-hover: rgba(20, 24, 48, .9);
+    --sf-cc-border: #2a3a6a;
+    --sf-cc-border-hover: #7df9ff;
+    --sf-cc-accent: #7df9ff;
+    --sf-cc-text: #e6f5ff;
+    --sf-cc-text-dim: rgba(230, 245, 255, .65);
+    --sf-cc-glow: 0 0 12px rgba(125, 249, 255, .35), inset 0 0 20px rgba(125,249,255,.05);
+    --sf-cc-radius: 4px;
+    --sf-cc-font: 'JetBrains Mono', 'Fira Code', monospace;
+    border-style: solid;
+    box-shadow: 0 0 18px rgba(125,249,255,.08);
+}
+.sf-cc-wrap.sf-cc-style-neon .sf-cc-card {
+    background: linear-gradient(135deg, rgba(125,249,255,.03), rgba(255,0,200,.03));
+    border-radius: 4px;
+}
+.sf-cc-wrap.sf-cc-style-neon .sf-cc-card-name {
+    text-shadow: 0 0 8px rgba(125,249,255,.4);
+}
+
+/* --- Parchment --- */
+.sf-cc-wrap.sf-cc-style-parchment {
+    --sf-cc-bg: rgba(244, 230, 200, .92);
+    --sf-cc-bg-hover: rgba(250, 240, 215, 1);
+    --sf-cc-border: #8a6d3b;
+    --sf-cc-border-hover: #5a3a1a;
+    --sf-cc-accent: #7a3a1a;
+    --sf-cc-text: #3a2410;
+    --sf-cc-text-dim: rgba(58, 36, 16, .7);
+    --sf-cc-glow: 0 4px 14px rgba(122, 58, 26, .25);
+    --sf-cc-radius: 4px;
+    --sf-cc-font: 'Georgia', 'Times New Roman', serif;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--sf-cc-bg);
+    background-image:
+        radial-gradient(ellipse at top, rgba(255,255,255,.4), transparent 60%),
+        radial-gradient(ellipse at bottom, rgba(122,58,26,.15), transparent 70%);
+}
+.sf-cc-wrap.sf-cc-style-parchment .sf-cc-card {
+    background: rgba(255, 250, 235, .55);
+    border-radius: 4px;
+}
+.sf-cc-wrap.sf-cc-style-parchment .sf-cc-card-index {
+    background: rgba(255,250,235,.7);
+}
+
+/* ============================================================
+   Choice Cards settings form rows
+   ============================================================ */
+.sf-cc-form-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+}
+.sf-cc-form-row label {
+    flex: 0 0 220px;
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-cc-form-row select,
+.sf-cc-form-row input[type="text"],
+.sf-cc-form-row input[type="number"] {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    color: var(--SmartThemeBodyColor, #ccc);
+    border-radius: 4px;
+}
+.sf-cc-form-row.sf-cc-form-row-block {
+    flex-direction: column;
+    align-items: stretch;
+}
+.sf-cc-form-row.sf-cc-form-row-block label {
+    flex: 0 0 auto;
+    margin-bottom: 4px;
+}
+.sf-cc-form-row textarea {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    color: var(--SmartThemeBodyColor, #ccc);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    resize: vertical;
+}
