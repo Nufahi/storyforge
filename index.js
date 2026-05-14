@@ -2236,7 +2236,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.2 (Choice Cards: mobile-friendly model picker)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.3 (Choice Cards: full-width on mobile)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2263,7 +2263,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.2 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.3 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
