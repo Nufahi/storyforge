@@ -2091,7 +2091,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.0 (Choice Cards: built-in API profile)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.1 (Choice Cards: settings layout fixes)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2118,7 +2118,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.1 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

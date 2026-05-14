@@ -908,38 +908,66 @@
 
 /* ============================================================
    Choice Cards settings form rows
+   Layout rules:
+   - Everything boxes with border-box so padding never causes overflow.
+   - Rows flex-wrap so children never push the row wider than its parent.
+   - All flex children get min-width: 0 to allow shrinking below content.
+   - Labels and input groups stack at <= 750px (typical ST sidebar width).
    ============================================================ */
+.sf-cc-form-row,
+.sf-cc-form-row *,
+.sf-cc-builtin-block,
+.sf-cc-builtin-block * {
+    box-sizing: border-box;
+}
+
 .sf-cc-form-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 8px 10px;
     margin: 8px 0;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
-.sf-cc-form-row label {
-    flex: 0 0 220px;
+.sf-cc-form-row > label {
+    flex: 1 1 180px;
+    min-width: 0;
+    max-width: 240px;
     font-size: 12px;
+    line-height: 1.3;
     color: var(--SmartThemeBodyColor, #ccc);
+    word-break: break-word;
 }
-.sf-cc-form-row select,
-.sf-cc-form-row input[type="text"],
-.sf-cc-form-row input[type="number"] {
-    flex: 1;
+.sf-cc-form-row > select,
+.sf-cc-form-row > input[type="text"],
+.sf-cc-form-row > input[type="number"],
+.sf-cc-form-row > input[type="password"] {
+    flex: 1 1 200px;
+    min-width: 0;
+    width: auto;
+    max-width: 100%;
     padding: 4px 8px;
     background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
     border: 1px solid var(--SmartThemeBorderColor, #444);
     color: var(--SmartThemeBodyColor, #ccc);
     border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
 }
 .sf-cc-form-row.sf-cc-form-row-block {
     flex-direction: column;
     align-items: stretch;
 }
-.sf-cc-form-row.sf-cc-form-row-block label {
+.sf-cc-form-row.sf-cc-form-row-block > label {
     flex: 0 0 auto;
+    max-width: 100%;
     margin-bottom: 4px;
 }
 .sf-cc-form-row textarea {
     width: 100%;
+    max-width: 100%;
     padding: 6px 8px;
     background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
     border: 1px solid var(--SmartThemeBorderColor, #444);
@@ -949,16 +977,6 @@
     font-size: 12px;
     resize: vertical;
 }
-.sf-cc-form-row input[type="password"] {
-    flex: 1;
-    padding: 4px 8px;
-    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
-    border: 1px solid var(--SmartThemeBorderColor, #444);
-    color: var(--SmartThemeBodyColor, #ccc);
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: 12px;
-}
 
 /* ============================================================
    Built-in API profile (own endpoint) UI
@@ -966,9 +984,13 @@
 .sf-cc-builtin-block {
     margin: 6px 0 0 0;
     padding: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     border: 1px solid var(--SmartThemeBorderColor, #444);
     border-radius: 6px;
     background: color-mix(in srgb, var(--SmartThemeBodyColor, currentColor) 3%, transparent);
+    overflow: hidden;
 }
 
 .sf-cc-info-box {
@@ -994,27 +1016,36 @@
 
 .sf-cc-key-row,
 .sf-cc-model-row {
-    flex: 1;
+    flex: 1 1 200px;
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
     align-items: center;
     min-width: 0;
+    max-width: 100%;
 }
 .sf-cc-key-row input,
 .sf-cc-model-row input {
-    flex: 1;
+    flex: 1 1 140px;
     min-width: 0;
+    width: auto;
 }
 .sf-cc-key-row .menu_button,
 .sf-cc-model-row .menu_button {
     flex: 0 0 auto;
     padding: 4px 8px;
     line-height: 1;
-    min-width: 0;
+    min-width: 28px;
+    min-height: 26px;
     height: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
 }
 
 .sf-cc-key-status {
+    flex: 1 1 100%;
     display: block;
     margin-top: 4px;
     font-size: 11px;
@@ -1026,27 +1057,13 @@
 .sf-cc-key-status-missing { color: #d9534f; opacity: 1; }
 
 /* ============================================================
-   Mobile tweaks for the built-in profile UI
-   ============================================================ */
-@media (max-width: 600px) {
-    .sf-cc-builtin-block {
-        padding: 8px;
-    }
-    .sf-cc-key-row,
-    .sf-cc-model-row {
-        flex-wrap: wrap;
-    }
-    .sf-cc-key-row input,
-    .sf-cc-model-row input {
-        flex: 1 1 100%;
-    }
-}
-
-/* ============================================================
    Mobile / narrow-screen adjustments
-   Matches the project breakpoint (max-width: 600px) used elsewhere.
+   Matches the project breakpoint (max-width: 600px) used elsewhere
+   for the chat cards themselves.
    ============================================================ */
 @media (max-width: 600px) {
+
+    .sf-cc-builtin-block { padding: 8px; }
 
     /* === Choice Cards wrap === */
     .sf-cc-wrap {
@@ -1127,19 +1144,39 @@
         opacity: 1;
     }
 
-    /* === Settings form rows in extensions_settings2 === */
+}
+
+/* ============================================================
+   Settings panel: stack label above input below ~750px.
+   This is wider than the chat-card breakpoint (600px) because
+   ST's extensions_settings2 sidebar is typically ~520px wide
+   even on desktop, so we want stacking to kick in much earlier
+   than on the chat itself.
+   ============================================================ */
+@media (max-width: 750px) {
     .sf-cc-form-row {
         flex-direction: column;
         align-items: stretch;
         gap: 4px;
     }
-    .sf-cc-form-row label {
+    .sf-cc-form-row > label {
         flex: 0 0 auto;
+        max-width: 100%;
         font-size: 11.5px;
     }
-    .sf-cc-form-row select,
-    .sf-cc-form-row input[type="text"],
-    .sf-cc-form-row input[type="number"] {
+    .sf-cc-form-row > select,
+    .sf-cc-form-row > input[type="text"],
+    .sf-cc-form-row > input[type="number"],
+    .sf-cc-form-row > input[type="password"] {
         width: 100%;
+        flex: 1 1 100%;
+    }
+    .sf-cc-key-row,
+    .sf-cc-model-row {
+        flex: 1 1 100%;
+    }
+    .sf-cc-key-row input,
+    .sf-cc-model-row input {
+        flex: 1 1 100%;
     }
 }
