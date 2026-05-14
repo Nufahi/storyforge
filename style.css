@@ -520,31 +520,55 @@
 
 /* ============================================================
    Choice Cards
+   Layout isolation: rendered as a sibling AFTER .mes (not inside),
+   so theme-specific .mes flex/grid/sticky tricks can't shift us.
    ============================================================ */
 
 .sf-cc-wrap {
-    --sf-cc-bg: rgba(20, 22, 28, .55);
-    --sf-cc-bg-hover: rgba(35, 38, 48, .85);
-    --sf-cc-border: var(--SmartThemeBorderColor, #4a4a55);
-    --sf-cc-border-hover: var(--SmartThemeQuoteColor, #c9a961);
-    --sf-cc-accent: var(--SmartThemeQuoteColor, #c9a961);
-    --sf-cc-text: var(--SmartThemeBodyColor, #e8e8ec);
-    --sf-cc-text-dim: rgba(232, 232, 236, .65);
-    --sf-cc-radius: 12px;
-    --sf-cc-glow: 0 0 16px rgba(201, 169, 97, .25);
+    /* Theme-adaptive variables. Defaults are conservative fallbacks for
+       themes that don't expose the corresponding ST variable. */
+    --sf-cc-bg: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, .35));
+    --sf-cc-bg-hover: var(--SmartThemeChatTintColor, rgba(255, 255, 255, .06));
+    --sf-cc-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, .15));
+    --sf-cc-border-hover: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor, currentColor));
+    --sf-cc-accent: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor, currentColor));
+    --sf-cc-text: var(--SmartThemeBodyColor, inherit);
+    --sf-cc-text-dim: var(--SmartThemeEmColor, var(--SmartThemeBodyColor, inherit));
+    --sf-cc-radius: var(--avatar-base-border-radius, 10px);
+    --sf-cc-glow: 0 4px 14px rgba(0, 0, 0, .25);
     --sf-cc-font: inherit;
+    --sf-cc-blur: var(--SmartThemeBlurStrength, 6px);
 
-    margin: 14px 4px 6px 4px;
-    padding: 12px 14px 14px 14px;
+    /* Layout: behave like a standalone block, never a flex/grid child of .mes */
+    display: block;
+    box-sizing: border-box;
+    width: auto;
+    /* Match horizontal padding of #chat children. .mes-block is typically
+       indented; we want to sit roughly under the bubble. */
+    max-width: var(--sheldWidth, 100%);
+    margin: 6px auto 14px auto;
+    padding: 10px 12px;
+    clear: both;
+    float: none;
+    text-align: left;
+    position: relative;
+    isolation: isolate;
+
     background: var(--sf-cc-bg);
     border: 1px solid var(--sf-cc-border);
     border-radius: var(--sf-cc-radius);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(var(--sf-cc-blur));
+    backdrop-filter: blur(var(--sf-cc-blur));
+    /* Behave well inside #chat regardless of whether it's a flex/grid column */
+    flex: 0 0 auto;
+    align-self: stretch;
+    justify-self: stretch;
+    grid-column: 1 / -1;
     font-family: var(--sf-cc-font);
+    font-size: var(--mainFontSize, 14px);
     color: var(--sf-cc-text);
-    animation: sf-cc-fade-in .35s ease-out;
-    transition: opacity .25s ease;
+    animation: sf-cc-fade-in .3s ease-out;
+    transition: opacity .25s ease, transform .25s ease;
 }
 
 .sf-cc-wrap.sf-cc-fading {
@@ -554,64 +578,129 @@
 }
 
 @keyframes sf-cc-fade-in {
-    from { opacity: 0; transform: translateY(8px); }
+    from { opacity: 0; transform: translateY(6px); }
     to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ============================================================
+   Header (always visible, clickable to toggle)
+   ============================================================ */
 .sf-cc-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 11px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.82);
     text-transform: uppercase;
-    letter-spacing: 1.2px;
+    letter-spacing: 1.1px;
     color: var(--sf-cc-text-dim);
-    margin-bottom: 10px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--sf-cc-border);
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+    min-height: 22px;
+    transition: color .15s ease;
 }
-.sf-cc-header i { color: var(--sf-cc-accent); font-size: 12px; }
-.sf-cc-header-label { font-weight: 600; }
+.sf-cc-header:hover { color: var(--sf-cc-accent); }
+.sf-cc-header:focus-visible {
+    outline: 2px solid var(--sf-cc-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.sf-cc-header-icon,
+.sf-cc-chevron {
+    color: var(--sf-cc-accent);
+    font-size: .9em;
+    flex: 0 0 auto;
+}
+.sf-cc-chevron {
+    transition: transform .25s ease;
+}
+.sf-cc-wrap:not(.sf-cc-collapsed) .sf-cc-chevron {
+    transform: rotate(90deg);
+}
+
+.sf-cc-header-label {
+    font-weight: 600;
+    color: inherit;
+}
+
+.sf-cc-count-badge {
+    flex: 0 0 auto;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--sf-cc-accent) 18%, transparent);
+    color: var(--sf-cc-accent);
+    border: 1px solid color-mix(in srgb, var(--sf-cc-accent) 30%, transparent);
+    letter-spacing: 0;
+    font-weight: 700;
+}
+
 .sf-cc-spacer { flex: 1; }
-.sf-cc-header button {
+
+.sf-cc-header .menu_button {
     background: transparent;
     border: none;
     color: var(--sf-cc-text-dim);
     cursor: pointer;
     padding: 2px 6px;
+    min-width: 0;
+    height: auto;
+    line-height: 1;
     border-radius: 4px;
     font-size: 12px;
     transition: color .15s, background .15s;
 }
-.sf-cc-header button:hover {
+.sf-cc-header .menu_button:hover {
     color: var(--sf-cc-accent);
-    background: rgba(255, 255, 255, .06);
+    background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
-.sf-cc-grid {
+/* ============================================================
+   Grid (collapsible)
+   ============================================================ */
+.sf-cc-wrap .sf-cc-grid {
     display: grid;
     grid-template-columns: 1fr;
     gap: 8px;
+    overflow: hidden;
+    transition: max-height .35s ease, opacity .25s ease, margin-top .25s ease, padding-top .25s ease;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--sf-cc-border);
+    max-height: 2000px;
+    opacity: 1;
 }
 
 @media (min-width: 720px) {
-    .sf-cc-grid { grid-template-columns: 1fr 1fr; }
+    .sf-cc-wrap .sf-cc-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.sf-cc-wrap.sf-cc-collapsed .sf-cc-grid {
+    max-height: 0;
+    margin-top: 0;
+    padding-top: 0;
+    border-top-color: transparent;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .sf-cc-card {
     display: flex;
     align-items: flex-start;
     gap: 12px;
-    padding: 12px 14px;
-    background: linear-gradient(135deg, rgba(255,255,255,.02), rgba(255,255,255,.06));
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--sf-cc-text) 4%, transparent);
     border: 1px solid var(--sf-cc-border);
-    border-radius: 10px;
+    border-radius: calc(var(--sf-cc-radius) - 4px);
     cursor: pointer;
     user-select: none;
     transition: border-color .2s ease, background .2s ease, transform .15s ease, box-shadow .2s ease;
     outline: none;
     position: relative;
     overflow: hidden;
+    color: inherit;
 }
 
 .sf-cc-card::before {
@@ -620,7 +709,7 @@
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    background: linear-gradient(135deg, transparent 0%, rgba(201,169,97,.06) 100%);
+    background: linear-gradient(135deg, transparent 0%, color-mix(in srgb, var(--sf-cc-accent) 10%, transparent) 100%);
     opacity: 0;
     transition: opacity .25s ease;
 }
@@ -640,10 +729,10 @@
     flex: 0 0 22px;
     height: 22px;
     border-radius: 50%;
-    background: rgba(0,0,0,.35);
+    background: color-mix(in srgb, var(--sf-cc-text) 8%, transparent);
     border: 1px solid var(--sf-cc-border);
     color: var(--sf-cc-accent);
-    font-size: 11px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.78);
     font-weight: 700;
     display: flex;
     align-items: center;
@@ -654,7 +743,7 @@
 .sf-cc-card:hover .sf-cc-card-index,
 .sf-cc-card:focus-visible .sf-cc-card-index {
     border-color: var(--sf-cc-accent);
-    background: rgba(201,169,97,.15);
+    background: color-mix(in srgb, var(--sf-cc-accent) 18%, transparent);
 }
 
 .sf-cc-card-body {
@@ -663,7 +752,7 @@
 }
 
 .sf-cc-card-name {
-    font-size: 13.5px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.96);
     font-weight: 600;
     line-height: 1.35;
     color: var(--sf-cc-text);
@@ -671,9 +760,10 @@
 
 .sf-cc-card-desc {
     margin-top: 6px;
-    font-size: 12px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.85);
     line-height: 1.45;
     color: var(--sf-cc-text-dim);
+    opacity: .85;
 }
 
 /* === Reveal: hover === */
@@ -693,9 +783,12 @@
 
 /* === Loading placeholder === */
 .sf-cc-wrap.sf-cc-loading .sf-cc-header {
-    border-bottom: none;
-    margin-bottom: 0;
+    cursor: default;
 }
+.sf-cc-wrap.sf-cc-loading .sf-cc-header:hover {
+    color: var(--sf-cc-text-dim);
+}
+
 
 /* ============================================================
    Style presets
@@ -703,15 +796,15 @@
 
 /* --- VN Classic (default) --- already set on .sf-cc-wrap */
 
-/* --- Minimal --- */
+/* --- Minimal (theme-adaptive, no fill) --- */
 .sf-cc-wrap.sf-cc-style-minimal {
     --sf-cc-bg: transparent;
-    --sf-cc-bg-hover: rgba(255,255,255,.04);
-    --sf-cc-accent: var(--SmartThemeBodyColor, #ccc);
+    --sf-cc-bg-hover: color-mix(in srgb, var(--SmartThemeBodyColor, currentColor) 6%, transparent);
+    --sf-cc-accent: var(--SmartThemeBodyColor, currentColor);
     --sf-cc-glow: none;
     --sf-cc-radius: 6px;
-    backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     background: transparent;
     border-style: dashed;
 }

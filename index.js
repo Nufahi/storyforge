@@ -76,6 +76,7 @@ const defaultSettings = Object.freeze({
     ccClickAction: 'insert',            // 'insert' | 'send'
     ccCustomPrompt: '',                 // overrides default generation template
     ccSendBarButton: true,
+    ccCollapsed: true,                  // start collapsed (header only, click to expand)
 });
 
 function getSettings() {
@@ -1217,17 +1218,21 @@ function ccRenderCards(choices, messageId) {
         </div>`;
     }).join('');
 
+    const collapsedClass = s.ccCollapsed ? ' sf-cc-collapsed' : '';
+    const count = choices.length;
     const wrap = $(`
-        <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}"
+        <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}${collapsedClass}"
              data-cc-message-id="${escapeHtml(String(messageId ?? ''))}">
-            <div class="sf-cc-header">
-                <i class="fa-solid fa-comments"></i>
+            <div class="sf-cc-header" role="button" tabindex="0" aria-expanded="${s.ccCollapsed ? 'false' : 'true'}">
+                <i class="fa-solid fa-chevron-right sf-cc-chevron"></i>
+                <i class="fa-solid fa-comments sf-cc-header-icon"></i>
                 <span class="sf-cc-header-label">Choose your action</span>
+                <span class="sf-cc-count-badge">${count}</span>
                 <span class="sf-cc-spacer"></span>
-                <button class="sf-cc-regen" title="Regenerate choices" tabindex="-1">
+                <button class="sf-cc-regen menu_button" title="Regenerate choices" tabindex="-1">
                     <i class="fa-solid fa-arrows-rotate"></i>
                 </button>
-                <button class="sf-cc-close" title="Dismiss" tabindex="-1">
+                <button class="sf-cc-close menu_button" title="Dismiss" tabindex="-1">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -1235,7 +1240,10 @@ function ccRenderCards(choices, messageId) {
         </div>
     `);
 
-    $host.append(wrap);
+    // Render OUTSIDE the .mes element. Themes that mess with .mes internals
+    // (flex/grid layouts, sticky positioning, transforms) won't affect us.
+    // Insert as a sibling immediately after the message bubble.
+    $host.after(wrap);
     // Store choice data on DOM so click handler doesn't need a closure.
     wrap.data('cc-choices', choices);
 
@@ -1243,7 +1251,7 @@ function ccRenderCards(choices, messageId) {
     const chat = document.getElementById('chat');
     if (chat) {
         const distanceFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
-        if (distanceFromBottom < 200) {
+        if (distanceFromBottom < 250) {
             requestAnimationFrame(() => { chat.scrollTop = chat.scrollHeight; });
         }
     }
@@ -1292,7 +1300,7 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
             <div class="sf-cc-header"><i class="fa-solid fa-spinner fa-spin"></i> <span>Generating choices…</span></div>
         </div>`);
         ccRemoveCards();
-        $host.append($placeholder);
+        $host.after($placeholder);
     }
     try {
         let choices = null;
@@ -1325,11 +1333,19 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
 
 // === Event wiring ===========================================================
 
+function ccToggleWrap($wrap, force) {
+    const willCollapse = typeof force === 'boolean'
+        ? force
+        : !$wrap.hasClass('sf-cc-collapsed');
+    $wrap.toggleClass('sf-cc-collapsed', willCollapse);
+    $wrap.find('.sf-cc-header').attr('aria-expanded', String(!willCollapse));
+}
+
 function ccBindCardEvents() {
     // Delegated so it survives re-renders.
-    $(document).off('click.sf-cc');
+    $(document).off('click.sf-cc keydown.sf-cc click.sf-cc-close click.sf-cc-regen click.sf-cc-header keydown.sf-cc-header');
+
     $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
-        // Avoid double-firing when clicking inner elements.
         e.preventDefault();
         const $wrap = $(this).closest('.sf-cc-wrap');
         const choices = $wrap.data('cc-choices');
@@ -1359,6 +1375,26 @@ function ccBindCardEvents() {
         e.preventDefault();
         e.stopPropagation();
         ccGenerateAndRender({ silent: false });
+    });
+
+    // Toggle collapse on header click (ignore clicks on header buttons).
+    $(document).on('click.sf-cc-header', '.sf-cc-header', function (e) {
+        if ($(e.target).closest('.sf-cc-regen, .sf-cc-close').length) return;
+        e.preventDefault();
+        const $wrap = $(this).closest('.sf-cc-wrap');
+        if (!$wrap.length || $wrap.hasClass('sf-cc-loading')) return;
+        ccToggleWrap($wrap);
+    });
+
+    $(document).on('keydown.sf-cc-header', '.sf-cc-header', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            // Only when the header itself has focus (not a nested button).
+            if (e.target !== this) return;
+            e.preventDefault();
+            const $wrap = $(this).closest('.sf-cc-wrap');
+            if (!$wrap.length || $wrap.hasClass('sf-cc-loading')) return;
+            ccToggleWrap($wrap);
+        }
     });
 }
 
@@ -1455,6 +1491,10 @@ function ccAddSettingsPanel() {
                         <input type="checkbox" id="sf-cc-sendbtn" ${s.ccSendBarButton ? 'checked' : ''}>
                         <label for="sf-cc-sendbtn">Show button in send bar</label>
                     </div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-collapsed" ${s.ccCollapsed ? 'checked' : ''}>
+                        <label for="sf-cc-collapsed">Collapsed by default (click header to expand)</label>
+                    </div>
 
                     <div class="sf-cc-form-row">
                         <label for="sf-cc-mode">Generation mode</label>
@@ -1512,6 +1552,10 @@ function ccAddSettingsPanel() {
         ccGetSettings().ccSendBarButton = $(this).is(':checked');
         saveSettings();
         ccUpdateSendBarButton();
+    });
+    panel.on('change', '#sf-cc-collapsed', function () {
+        ccGetSettings().ccCollapsed = $(this).is(':checked');
+        saveSettings();
     });
     panel.on('change', '#sf-cc-mode', function () {
         ccGetSettings().ccMode = $(this).val();
@@ -1576,7 +1620,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.1.0 (Choice Cards)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.2.0 (Choice Cards: collapsible + theme-adaptive)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -1603,7 +1647,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.1.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.2.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
