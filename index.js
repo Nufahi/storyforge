@@ -89,6 +89,7 @@ const defaultSettings = Object.freeze({
 // Models that the user has fetched once via "Fetch models" — cached in memory
 // only (not persisted) so the dropdown doesn't have to refetch every render.
 let ccFetchedModels = [];
+let ccDocumentBindingsInstalled = false;
 
 function getSettings() {
     const { extensionSettings } = SillyTavern.getContext();
@@ -1712,6 +1713,69 @@ function ccUpdateSendBarButton() {
 
 // === Settings panel (extensions_settings2) ==================================
 
+// === Model picker (custom dropdown — works on mobile, datalist doesn't) ====
+
+// Fuzzy-ish substring filter. Case-insensitive, splits the query by whitespace
+// and requires every token to be present somewhere in the model id.
+function ccFilterModels(list, query) {
+    if (!query || !query.trim()) return list.slice();
+    const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return list.filter(id => {
+        const lower = id.toLowerCase();
+        return tokens.every(t => lower.includes(t));
+    });
+}
+
+function ccRenderModelDropdown(panel, currentValue) {
+    const $dd = panel.find('#sf-cc-model-dropdown');
+    if (!$dd.length) return;
+    $dd.empty();
+
+    if (!ccFetchedModels.length) {
+        $dd.append(`<div class="sf-cc-model-dropdown-empty">
+            No models loaded. Press <b>Fetch</b> to load the list.
+        </div>`);
+        return;
+    }
+
+    const filtered = ccFilterModels(ccFetchedModels, currentValue || '');
+    if (filtered.length === 0) {
+        $dd.append(`<div class="sf-cc-model-dropdown-empty">
+            No models match "${escapeHtml(currentValue || '')}".
+        </div>`);
+        return;
+    }
+
+    // Cap at 200 visible items to keep DOM small. If user has typed too few
+    // characters to narrow it down they can keep typing.
+    const visible = filtered.slice(0, 200);
+    const lower = (currentValue || '').toLowerCase();
+    const html = visible.map(id => {
+        const isCurrent = id.toLowerCase() === lower;
+        return `<div class="sf-cc-model-item${isCurrent ? ' sf-cc-model-item-current' : ''}"
+                     data-id="${escapeHtml(id)}" role="option" tabindex="0">${escapeHtml(id)}</div>`;
+    }).join('');
+
+    let footer = '';
+    if (filtered.length > visible.length) {
+        footer = `<div class="sf-cc-model-dropdown-empty">
+            Showing ${visible.length} of ${filtered.length}. Keep typing to narrow down.
+        </div>`;
+    }
+    $dd.append(html + footer);
+}
+
+function ccShowModelDropdown(panel) {
+    const $picker = panel.find('#sf-cc-model-picker');
+    $picker.addClass('sf-cc-model-open');
+    panel.find('#sf-cc-model-dropdown').removeAttr('hidden');
+}
+
+function ccHideModelDropdown(panel) {
+    panel.find('#sf-cc-model-picker').removeClass('sf-cc-model-open');
+    panel.find('#sf-cc-model-dropdown').attr('hidden', true);
+}
+
 function ccAddSettingsPanel() {
     if ($('#sf-cc-panel').length) return;
     const s = ccGetSettings();
@@ -1828,10 +1892,22 @@ function ccAddSettingsPanel() {
                         <div class="sf-cc-form-row">
                             <label for="sf-cc-apimodel">Model</label>
                             <div class="sf-cc-model-row">
-                                <input type="text" id="sf-cc-apimodel" list="sf-cc-model-list"
-                                    value="${escapeHtml(s.ccApiModel || '')}"
-                                    placeholder="anthropic/claude-3.5-haiku">
-                                <datalist id="sf-cc-model-list"></datalist>
+                                <div class="sf-cc-model-picker" id="sf-cc-model-picker">
+                                    <input type="text" id="sf-cc-apimodel"
+                                        class="sf-cc-model-input"
+                                        value="${escapeHtml(s.ccApiModel || '')}"
+                                        placeholder="anthropic/claude-3.5-haiku"
+                                        autocomplete="off" spellcheck="false">
+                                    <button class="sf-cc-model-toggle" type="button"
+                                        title="Show / hide model list" tabindex="-1">
+                                        <i class="fa-solid fa-chevron-down"></i>
+                                    </button>
+                                    <div class="sf-cc-model-dropdown" id="sf-cc-model-dropdown" hidden>
+                                        <div class="sf-cc-model-dropdown-empty">
+                                            No models loaded. Press <b>Fetch</b> to load the list.
+                                        </div>
+                                    </div>
+                                </div>
                                 <button id="sf-cc-fetch-models" class="menu_button" title="Fetch model list from endpoint">
                                     <i class="fa-solid fa-list"></i> Fetch
                                 </button>
@@ -1945,8 +2021,70 @@ function ccAddSettingsPanel() {
         saveSettings();
     });
     panel.on('input', '#sf-cc-apimodel', function () {
-        ccGetSettings().ccApiModel = $(this).val();
+        const val = $(this).val();
+        ccGetSettings().ccApiModel = val;
         saveSettings();
+        // Re-render filtered list and keep dropdown open while typing.
+        ccRenderModelDropdown(panel, val);
+        ccShowModelDropdown(panel);
+    });
+    // Open dropdown on focus / click on the input.
+    panel.on('focus click', '#sf-cc-apimodel', function () {
+        ccRenderModelDropdown(panel, $(this).val());
+        ccShowModelDropdown(panel);
+    });
+    // Toggle dropdown via chevron button.
+    panel.on('click', '.sf-cc-model-toggle', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $picker = panel.find('#sf-cc-model-picker');
+        if ($picker.hasClass('sf-cc-model-open')) {
+            ccHideModelDropdown(panel);
+        } else {
+            ccRenderModelDropdown(panel, panel.find('#sf-cc-apimodel').val());
+            ccShowModelDropdown(panel);
+        }
+    });
+    // Pick an item.
+    panel.on('mousedown touchstart', '.sf-cc-model-item', function (e) {
+        // mousedown (not click) so the input doesn't lose focus before
+        // we read the value. touchstart for mobile.
+        e.preventDefault();
+        const id = $(this).attr('data-id') || '';
+        if (!id) return;
+        const $input = panel.find('#sf-cc-apimodel');
+        $input.val(id);
+        ccGetSettings().ccApiModel = id;
+        saveSettings();
+        ccHideModelDropdown(panel);
+        $input.trigger('blur');
+    });
+    // Keyboard: Esc closes, ArrowDown moves focus into list (basic a11y).
+    panel.on('keydown', '#sf-cc-apimodel', function (e) {
+        if (e.key === 'Escape') {
+            ccHideModelDropdown(panel);
+        } else if (e.key === 'ArrowDown') {
+            const $first = panel.find('.sf-cc-model-item').first();
+            if ($first.length) { e.preventDefault(); $first.focus(); }
+        }
+    });
+    panel.on('keydown', '.sf-cc-model-item', function (e) {
+        const $items = panel.find('.sf-cc-model-item');
+        const idx = $items.index(this);
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            $items.eq(Math.min(idx + 1, $items.length - 1)).focus();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (idx <= 0) panel.find('#sf-cc-apimodel').focus();
+            else $items.eq(idx - 1).focus();
+        } else if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            $(this).trigger('mousedown');
+        } else if (e.key === 'Escape') {
+            ccHideModelDropdown(panel);
+            panel.find('#sf-cc-apimodel').focus();
+        }
     });
     panel.on('input', '#sf-cc-context', function () {
         ccGetSettings().ccContextSize = parseInt($(this).val(), 10) || 0;
@@ -2005,12 +2143,10 @@ function ccAddSettingsPanel() {
         try {
             const list = await ccFetchModels();
             ccFetchedModels = list;
-            const $dl = panel.find('#sf-cc-model-list');
-            $dl.empty();
-            for (const id of list) {
-                $dl.append(`<option value="${escapeHtml(id)}"></option>`);
-            }
-            toastr.success(`Loaded ${list.length} models`, 'StoryForge');
+            ccRenderModelDropdown(panel, panel.find('#sf-cc-apimodel').val());
+            ccShowModelDropdown(panel);
+            toastr.success(`Loaded ${list.length} models. Tap the model field to browse.`,
+                'StoryForge', { timeOut: 4000 });
         } catch (err) {
             console.error(`[${MODULE_NAME}] Fetch models failed`, err);
             toastr.error(`Failed: ${err.message || err}`, 'StoryForge', { timeOut: 5000 });
@@ -2040,12 +2176,21 @@ function ccAddSettingsPanel() {
         }
     });
 
-    // Populate datalist from cached fetch result, if any.
+    // Pre-populate dropdown list (hidden) from cached fetch result, if any.
     if (ccFetchedModels.length) {
-        const $dl = panel.find('#sf-cc-model-list');
-        for (const id of ccFetchedModels) {
-            $dl.append(`<option value="${escapeHtml(id)}"></option>`);
-        }
+        ccRenderModelDropdown(panel, panel.find('#sf-cc-apimodel').val());
+    }
+
+    // Close dropdown when clicking anywhere outside the picker.
+    if (!ccDocumentBindingsInstalled) {
+        $(document).on('click.sf-cc-model-outside', function (e) {
+            const $target = $(e.target);
+            if ($target.closest('.sf-cc-model-picker').length === 0) {
+                $('.sf-cc-model-picker').removeClass('sf-cc-model-open');
+                $('.sf-cc-model-dropdown').attr('hidden', true);
+            }
+        });
+        ccDocumentBindingsInstalled = true;
     }
 
     if (s.ccApiSource === 'builtin') {
@@ -2091,7 +2236,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.1 (Choice Cards: settings layout fixes)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.2 (Choice Cards: mobile-friendly model picker)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2118,7 +2263,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.1 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.2 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
