@@ -949,6 +949,98 @@
     font-size: 12px;
     resize: vertical;
 }
+.sf-cc-form-row input[type="password"] {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,.3));
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    color: var(--SmartThemeBodyColor, #ccc);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+}
+
+/* ============================================================
+   Built-in API profile (own endpoint) UI
+   ============================================================ */
+.sf-cc-builtin-block {
+    margin: 6px 0 0 0;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor, currentColor) 3%, transparent);
+}
+
+.sf-cc-info-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    line-height: 1.45;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 8%, transparent);
+    border-left: 3px solid var(--SmartThemeQuoteColor, currentColor);
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-cc-info-box i { font-size: 12px; margin-top: 1px; color: var(--SmartThemeQuoteColor, currentColor); }
+.sf-cc-info-box code {
+    padding: 0 4px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    border-radius: 3px;
+    font-size: 10.5px;
+}
+
+.sf-cc-key-row,
+.sf-cc-model-row {
+    flex: 1;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    min-width: 0;
+}
+.sf-cc-key-row input,
+.sf-cc-model-row input {
+    flex: 1;
+    min-width: 0;
+}
+.sf-cc-key-row .menu_button,
+.sf-cc-model-row .menu_button {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    line-height: 1;
+    min-width: 0;
+    height: auto;
+}
+
+.sf-cc-key-status {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--SmartThemeEmColor, var(--SmartThemeBodyColor, #aaa));
+    opacity: .8;
+    width: 100%;
+}
+.sf-cc-key-status-ok { color: #5cb85c; opacity: 1; }
+.sf-cc-key-status-missing { color: #d9534f; opacity: 1; }
+
+/* ============================================================
+   Mobile tweaks for the built-in profile UI
+   ============================================================ */
+@media (max-width: 600px) {
+    .sf-cc-builtin-block {
+        padding: 8px;
+    }
+    .sf-cc-key-row,
+    .sf-cc-model-row {
+        flex-wrap: wrap;
+    }
+    .sf-cc-key-row input,
+    .sf-cc-model-row input {
+        flex: 1 1 100%;
+    }
+}
 
 /* ============================================================
    Mobile / narrow-screen adjustments

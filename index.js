@@ -77,7 +77,18 @@ const defaultSettings = Object.freeze({
     ccCustomPrompt: '',                 // overrides default generation template
     ccSendBarButton: true,
     ccCollapsed: true,                  // start collapsed (header only, click to expand)
+    // === Built-in API profile (own endpoint, cheaper model) ===
+    ccApiSource: 'default',             // 'default' | 'st-profile' | 'builtin'
+    ccApiUrl: '',                       // e.g. https://openrouter.ai/api/v1 (no trailing slash)
+    ccApiModel: '',                     // e.g. anthropic/claude-3.5-haiku
+    ccContextSize: 6,                   // number of last chat messages to send (0-20)
+    ccTemperature: 0.7,
+    ccMaxTokens: 800,
 });
+
+// Models that the user has fetched once via "Fetch models" — cached in memory
+// only (not persisted) so the dropdown doesn't have to refetch every render.
+let ccFetchedModels = [];
 
 function getSettings() {
     const { extensionSettings } = SillyTavern.getContext();
@@ -1033,13 +1044,21 @@ const CC_VALID_REVEAL = ['hover', 'always', 'tooltip'];
 let ccGenerationInProgress = false;
 let ccLastMessageId = null;
 
+const CC_VALID_API_SOURCES = ['default', 'st-profile', 'builtin'];
+
 function ccGetSettings() {
     const s = getSettings();
     // Clamp / normalize on every read so bad imports can't break anything.
     if (!CC_VALID_STYLES.includes(s.ccStyle)) s.ccStyle = 'vn-classic';
     if (!CC_VALID_MODES.includes(s.ccMode)) s.ccMode = 'request';
     if (!CC_VALID_REVEAL.includes(s.ccReveal)) s.ccReveal = 'hover';
+    if (!CC_VALID_API_SOURCES.includes(s.ccApiSource)) s.ccApiSource = 'default';
     s.ccCount = Math.min(Math.max(parseInt(s.ccCount, 10) || 3, 2), 6);
+    s.ccContextSize = Math.min(Math.max(parseInt(s.ccContextSize, 10) || 6, 0), 20);
+    const t = parseFloat(s.ccTemperature);
+    s.ccTemperature = Number.isFinite(t) ? Math.min(Math.max(t, 0), 2) : 0.7;
+    const mt = parseInt(s.ccMaxTokens, 10);
+    s.ccMaxTokens = Number.isFinite(mt) ? Math.min(Math.max(mt, 64), 4096) : 800;
     return s;
 }
 
@@ -1138,6 +1157,197 @@ function ccParseChoices(rawText) {
 
 // === Generation =============================================================
 
+// === Built-in API profile (own endpoint, cheaper model) ===================
+
+const CC_SECRET_KEY = 'storyforge_choice_cards_api_key';
+
+// Normalize "https://openrouter.ai/api/v1/" -> "https://openrouter.ai/api/v1".
+function ccNormalizeUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    let trimmed = url.trim().replace(/\/+$/, '');
+    // Strip trailing /chat/completions if user pasted the full path.
+    trimmed = trimmed.replace(/\/chat\/completions$/i, '');
+    return trimmed;
+}
+
+// Get the request headers used by ST internal fetch (includes CSRF token).
+// Falls back to a plain JSON header set if the helper is unavailable.
+function ccGetStRequestHeaders() {
+    const ctx = SillyTavern.getContext();
+    try {
+        if (typeof ctx.getRequestHeaders === 'function') {
+            return ctx.getRequestHeaders();
+        }
+    } catch { /* ignore */ }
+    return { 'Content-Type': 'application/json' };
+}
+
+// Save / load / clear API key via ST's secret store. Keys never round-trip
+// back to the client once saved (find returns true/false), so we keep a
+// last-known boolean and only re-send when the user actually edits the field.
+async function ccSaveApiKey(rawKey) {
+    if (typeof rawKey !== 'string') return false;
+    const key = rawKey.trim();
+    const headers = ccGetStRequestHeaders();
+    try {
+        const res = await fetch('/api/secrets/write', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ key: CC_SECRET_KEY, value: key }),
+        });
+        return res.ok;
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] Failed to save API key`, err);
+        return false;
+    }
+}
+
+// Returns the actual key string (via /api/secrets/view) or null.
+async function ccLoadApiKey() {
+    const headers = ccGetStRequestHeaders();
+    try {
+        const res = await fetch('/api/secrets/view', { method: 'POST', headers });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data && typeof data === 'object' && typeof data[CC_SECRET_KEY] === 'string') {
+            return data[CC_SECRET_KEY];
+        }
+        return null;
+    } catch (err) {
+        // Some ST instances disable allowKeysExposure; in that case we can't
+        // read the key back at all. Tell the user clearly.
+        console.warn(`[${MODULE_NAME}] Cannot read secret (allowKeysExposure off?)`, err);
+        return null;
+    }
+}
+
+// Whether a key exists, even if we can't read it back.
+async function ccHasApiKey() {
+    const headers = ccGetStRequestHeaders();
+    try {
+        const res = await fetch('/api/secrets/find', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ key: CC_SECRET_KEY }),
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        // ST returns { value: <bool> } or sometimes just the boolean.
+        if (typeof data === 'boolean') return data;
+        if (data && typeof data.value === 'boolean') return data.value;
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+// Convert SillyTavern chat history to OpenAI-style messages. We keep it simple:
+// user messages -> {role:'user'}, bot messages -> {role:'assistant'}, system
+// messages -> {role:'system'}. Avatar/name prefixes are not included; the
+// model only needs the textual flow.
+function ccBuildChatMessages(count) {
+    const ctx = SillyTavern.getContext();
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    if (!chat.length || count <= 0) return [];
+    const slice = chat.slice(-count);
+    const out = [];
+    for (const m of slice) {
+        if (!m || typeof m !== 'object') continue;
+        const text = typeof m.mes === 'string' ? m.mes.trim() : '';
+        if (!text) continue;
+        const role = m.is_system ? 'system' : (m.is_user ? 'user' : 'assistant');
+        out.push({ role, content: text });
+    }
+    return out;
+}
+
+// POST to a OpenAI-compatible /chat/completions endpoint and return the
+// assistant text. Throws on transport / HTTP / response-shape errors.
+async function ccCallBuiltinApi({ instructionPrompt, signal }) {
+    const s = ccGetSettings();
+    const baseUrl = ccNormalizeUrl(s.ccApiUrl);
+    if (!baseUrl) throw new Error('API URL is empty');
+    if (!s.ccApiModel || !s.ccApiModel.trim()) throw new Error('Model is empty');
+
+    const apiKey = await ccLoadApiKey();
+    if (!apiKey) {
+        throw new Error('API key missing or not readable (allowKeysExposure may be off)');
+    }
+
+    const chatMessages = ccBuildChatMessages(Math.max(0, Math.min(20, s.ccContextSize | 0)));
+    const messages = [
+        { role: 'system', content: instructionPrompt },
+        ...chatMessages,
+        { role: 'user', content: instructionPrompt },
+    ];
+
+    const body = {
+        model: s.ccApiModel.trim(),
+        messages,
+        temperature: Number.isFinite(+s.ccTemperature) ? +s.ccTemperature : 0.7,
+        max_tokens: Number.isFinite(+s.ccMaxTokens) ? Math.max(64, +s.ccMaxTokens | 0) : 800,
+        stream: false,
+    };
+
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            // OpenRouter etiquette headers (ignored by other providers).
+            'HTTP-Referer': location.origin,
+            'X-Title': 'SillyTavern StoryForge',
+        },
+        body: JSON.stringify(body),
+        signal,
+    });
+
+    if (!res.ok) {
+        let errText = '';
+        try { errText = (await res.text()).slice(0, 400); } catch { /* ignore */ }
+        throw new Error(`HTTP ${res.status} ${res.statusText}: ${errText}`);
+    }
+
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+    if (typeof text !== 'string') {
+        throw new Error('Unexpected response shape (no choices[0].message.content)');
+    }
+    return text;
+}
+
+// GET <baseUrl>/models and return a sorted list of model id strings.
+async function ccFetchModels() {
+    const s = ccGetSettings();
+    const baseUrl = ccNormalizeUrl(s.ccApiUrl);
+    if (!baseUrl) throw new Error('API URL is empty');
+    const apiKey = await ccLoadApiKey();
+
+    const res = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
+    });
+    if (!res.ok) {
+        let errText = '';
+        try { errText = (await res.text()).slice(0, 200); } catch { /* ignore */ }
+        throw new Error(`HTTP ${res.status}: ${errText}`);
+    }
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data
+        : Array.isArray(data?.models) ? data.models
+        : Array.isArray(data) ? data : [];
+    const ids = [];
+    for (const item of list) {
+        if (typeof item === 'string') ids.push(item);
+        else if (item && typeof item === 'object') {
+            const id = item.id || item.name || item.model;
+            if (typeof id === 'string') ids.push(id);
+        }
+    }
+    ids.sort((a, b) => a.localeCompare(b));
+    return ids;
+}
+
 // Resolve a connection profile name to a callable that returns a Promise<string>.
 // We try the SillyTavern Connection Manager API first, then fall back to
 // generateQuietPrompt on the current profile.
@@ -1174,7 +1384,16 @@ async function ccGenerateWithLLM(prompt, profileName) {
 async function ccRequestChoices() {
     const s = ccGetSettings();
     const prompt = ccBuildPromptTemplate(s.ccCount);
-    const raw = await ccGenerateWithLLM(prompt, s.ccProfile);
+
+    let raw;
+    if (s.ccApiSource === 'builtin') {
+        raw = await ccCallBuiltinApi({ instructionPrompt: prompt });
+    } else if (s.ccApiSource === 'st-profile' && (s.ccProfile || '').trim()) {
+        raw = await ccGenerateWithLLM(prompt, s.ccProfile);
+    } else {
+        // 'default' — same connection ST is currently using.
+        raw = await ccGenerateWithLLM(prompt, '');
+    }
     return ccParseChoices(raw);
 }
 
@@ -1560,8 +1779,79 @@ function ccAddSettingsPanel() {
                         <input type="number" id="sf-cc-count" min="2" max="6" value="${s.ccCount}">
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-profile">Connection profile (empty = current)</label>
+                        <label for="sf-cc-apisource">Generation API</label>
+                        <select id="sf-cc-apisource">
+                            <option value="default" ${s.ccApiSource === 'default' ? 'selected' : ''}>Current ST connection (default)</option>
+                            <option value="st-profile" ${s.ccApiSource === 'st-profile' ? 'selected' : ''}>SillyTavern Connection Profile</option>
+                            <option value="builtin" ${s.ccApiSource === 'builtin' ? 'selected' : ''}>Built-in profile (own endpoint)</option>
+                        </select>
+                    </div>
+                    <div class="sf-cc-form-row sf-cc-api-st-profile" style="${s.ccApiSource === 'st-profile' ? '' : 'display:none'}">
+                        <label for="sf-cc-profile">ST profile name</label>
                         <input type="text" id="sf-cc-profile" value="${escapeHtml(s.ccProfile || '')}" placeholder="e.g. small-model">
+                    </div>
+                    <div class="sf-cc-builtin-block" style="${s.ccApiSource === 'builtin' ? '' : 'display:none'}">
+                        <div class="sf-cc-info-box">
+                            <i class="fa-solid fa-circle-info"></i>
+                            <div>
+                                Use a cheap small model (e.g. <code>claude-3.5-haiku</code>, <code>gpt-4o-mini</code>, <code>llama-3.1-8b-instant</code>)
+                                so generating choices doesn't burn through your main-model budget.
+                                Endpoint must be OpenAI-compatible (<code>/chat/completions</code>).
+                                <br><br>
+                                <b>CORS note:</b> the request goes directly from your browser. Works with
+                                OpenRouter, OpenAI, Groq, DeepSeek, Mistral, Together, and local servers
+                                (ollama/lmstudio/koboldcpp). The native Anthropic API does <b>not</b> allow
+                                browser requests — use OpenRouter for Claude models.
+                            </div>
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-apiurl">API base URL</label>
+                            <input type="text" id="sf-cc-apiurl" value="${escapeHtml(s.ccApiUrl || '')}"
+                                placeholder="https://openrouter.ai/api/v1">
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-apikey">API key</label>
+                            <div class="sf-cc-key-row">
+                                <input type="password" id="sf-cc-apikey" value="" placeholder="${''}" autocomplete="off">
+                                <button id="sf-cc-key-save" class="menu_button" title="Save key to ST secrets">
+                                    <i class="fa-solid fa-floppy-disk"></i>
+                                </button>
+                                <button id="sf-cc-key-show" class="menu_button" title="Toggle visibility">
+                                    <i class="fa-solid fa-eye"></i>
+                                </button>
+                                <button id="sf-cc-key-clear" class="menu_button" title="Delete saved key">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                            <span class="sf-cc-key-status" id="sf-cc-key-status">Status: unknown</span>
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-apimodel">Model</label>
+                            <div class="sf-cc-model-row">
+                                <input type="text" id="sf-cc-apimodel" list="sf-cc-model-list"
+                                    value="${escapeHtml(s.ccApiModel || '')}"
+                                    placeholder="anthropic/claude-3.5-haiku">
+                                <datalist id="sf-cc-model-list"></datalist>
+                                <button id="sf-cc-fetch-models" class="menu_button" title="Fetch model list from endpoint">
+                                    <i class="fa-solid fa-list"></i> Fetch
+                                </button>
+                            </div>
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-context">Chat history sent (msgs)</label>
+                            <input type="number" id="sf-cc-context" min="0" max="20" value="${s.ccContextSize}">
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-temp">Temperature (0-2)</label>
+                            <input type="number" id="sf-cc-temp" min="0" max="2" step="0.1" value="${s.ccTemperature}">
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-maxtok">Max tokens</label>
+                            <input type="number" id="sf-cc-maxtok" min="64" max="4096" value="${s.ccMaxTokens}">
+                        </div>
+                        <div class="sf-qi-actions">
+                            <button id="sf-cc-test-conn" class="menu_button"><i class="fa-solid fa-plug"></i> Test connection</button>
+                        </div>
                     </div>
                     <div class="sf-cc-form-row">
                         <label for="sf-cc-clickaction">On click</label>
@@ -1638,6 +1928,140 @@ function ccAddSettingsPanel() {
     });
     panel.on('click', '#sf-cc-test', () => ccGenerateAndRender({ silent: false }));
     panel.on('click', '#sf-cc-clear', () => ccRemoveCards());
+
+    // ==== API source switching ====
+    panel.on('change', '#sf-cc-apisource', function () {
+        const v = $(this).val();
+        ccGetSettings().ccApiSource = v;
+        saveSettings();
+        panel.find('.sf-cc-api-st-profile').toggle(v === 'st-profile');
+        panel.find('.sf-cc-builtin-block').toggle(v === 'builtin');
+        if (v === 'builtin') ccRefreshKeyStatus(panel);
+    });
+
+    // ==== Built-in profile fields ====
+    panel.on('input', '#sf-cc-apiurl', function () {
+        ccGetSettings().ccApiUrl = $(this).val();
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-apimodel', function () {
+        ccGetSettings().ccApiModel = $(this).val();
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-context', function () {
+        ccGetSettings().ccContextSize = parseInt($(this).val(), 10) || 0;
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-temp', function () {
+        ccGetSettings().ccTemperature = parseFloat($(this).val()) || 0;
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-maxtok', function () {
+        ccGetSettings().ccMaxTokens = parseInt($(this).val(), 10) || 800;
+        saveSettings();
+    });
+
+    // ==== API key save / clear / visibility ====
+    panel.on('click', '#sf-cc-key-save', async function () {
+        const $input = panel.find('#sf-cc-apikey');
+        const value = $input.val();
+        if (!value || !value.trim()) {
+            toastr.warning('Enter an API key first', 'StoryForge');
+            return;
+        }
+        const ok = await ccSaveApiKey(value);
+        if (ok) {
+            $input.val('');                       // clear field after save
+            toastr.success('API key saved to ST secrets', 'StoryForge');
+            ccRefreshKeyStatus(panel);
+        } else {
+            toastr.error('Failed to save API key', 'StoryForge');
+        }
+    });
+    panel.on('click', '#sf-cc-key-clear', async function () {
+        const ok = await ccSaveApiKey('');
+        if (ok) {
+            toastr.info('API key deleted', 'StoryForge');
+            ccRefreshKeyStatus(panel);
+        } else {
+            toastr.error('Failed to delete key', 'StoryForge');
+        }
+    });
+    panel.on('click', '#sf-cc-key-show', function () {
+        const $input = panel.find('#sf-cc-apikey');
+        const showing = $input.attr('type') === 'text';
+        $input.attr('type', showing ? 'password' : 'text');
+        $(this).find('i')
+            .toggleClass('fa-eye', showing)
+            .toggleClass('fa-eye-slash', !showing);
+    });
+
+    // ==== Fetch models ====
+    panel.on('click', '#sf-cc-fetch-models', async function () {
+        const $btn = $(this);
+        const original = $btn.html();
+        $btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Fetching');
+        $btn.prop('disabled', true);
+        try {
+            const list = await ccFetchModels();
+            ccFetchedModels = list;
+            const $dl = panel.find('#sf-cc-model-list');
+            $dl.empty();
+            for (const id of list) {
+                $dl.append(`<option value="${escapeHtml(id)}"></option>`);
+            }
+            toastr.success(`Loaded ${list.length} models`, 'StoryForge');
+        } catch (err) {
+            console.error(`[${MODULE_NAME}] Fetch models failed`, err);
+            toastr.error(`Failed: ${err.message || err}`, 'StoryForge', { timeOut: 5000 });
+        } finally {
+            $btn.html(original);
+            $btn.prop('disabled', false);
+        }
+    });
+
+    // ==== Test connection ====
+    panel.on('click', '#sf-cc-test-conn', async function () {
+        const $btn = $(this);
+        const original = $btn.html();
+        $btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Testing');
+        $btn.prop('disabled', true);
+        try {
+            const txt = await ccCallBuiltinApi({
+                instructionPrompt: 'Respond with exactly the word OK and nothing else.',
+            });
+            toastr.success(`Connection OK. Reply: "${String(txt).trim().slice(0, 40)}"`, 'StoryForge', { timeOut: 4000 });
+        } catch (err) {
+            console.error(`[${MODULE_NAME}] Test connection failed`, err);
+            toastr.error(`Failed: ${err.message || err}`, 'StoryForge', { timeOut: 6000 });
+        } finally {
+            $btn.html(original);
+            $btn.prop('disabled', false);
+        }
+    });
+
+    // Populate datalist from cached fetch result, if any.
+    if (ccFetchedModels.length) {
+        const $dl = panel.find('#sf-cc-model-list');
+        for (const id of ccFetchedModels) {
+            $dl.append(`<option value="${escapeHtml(id)}"></option>`);
+        }
+    }
+
+    if (s.ccApiSource === 'builtin') {
+        ccRefreshKeyStatus(panel);
+    }
+}
+
+async function ccRefreshKeyStatus(panel) {
+    const $status = panel.find('#sf-cc-key-status');
+    if (!$status.length) return;
+    $status.text('Status: checking…');
+    const exists = await ccHasApiKey();
+    $status
+        .toggleClass('sf-cc-key-status-ok', exists)
+        .toggleClass('sf-cc-key-status-missing', !exists)
+        .text(exists ? 'Status: key saved ✓' : 'Status: no key saved');
 }
 
 // === Slash commands =========================================================
@@ -1667,7 +2091,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.2.1 (Choice Cards: timer + mobile)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.0 (Choice Cards: built-in API profile)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -1694,7 +2118,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.2.1 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
