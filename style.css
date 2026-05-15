@@ -702,32 +702,120 @@
 }
 
 /* ============================================================
-   Grid (collapsible)
+   Body / sections (collapsible)
    ============================================================ */
-.sf-cc-wrap .sf-cc-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
+.sf-cc-wrap .sf-cc-body {
     overflow: hidden;
     transition: max-height .35s ease, opacity .25s ease, margin-top .25s ease, padding-top .25s ease;
     margin-top: 10px;
     padding-top: 10px;
     border-top: 1px solid var(--sf-cc-border);
-    max-height: 2000px;
+    max-height: 4000px;
     opacity: 1;
 }
 
-@media (min-width: 720px) {
-    .sf-cc-wrap .sf-cc-grid { grid-template-columns: 1fr 1fr; }
-}
-
-.sf-cc-wrap.sf-cc-collapsed .sf-cc-grid {
+.sf-cc-wrap.sf-cc-collapsed .sf-cc-body {
     max-height: 0;
     margin-top: 0;
     padding-top: 0;
     border-top-color: transparent;
     opacity: 0;
     pointer-events: none;
+}
+
+.sf-cc-section {
+    /* Stacked sections: user first, optional char second. */
+}
+
+.sf-cc-section + .sf-cc-section,
+.sf-cc-charbar + .sf-cc-section {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed color-mix(in srgb, var(--sf-cc-border) 90%, transparent);
+}
+
+.sf-cc-section-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.82);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--sf-cc-text-dim);
+    opacity: .85;
+    margin-bottom: 8px;
+}
+
+.sf-cc-section-label i {
+    color: var(--sf-cc-accent);
+    font-size: calc(var(--mainFontSize, 14px) * 0.9);
+}
+
+.sf-cc-section-char .sf-cc-section-label {
+    color: var(--sf-cc-accent);
+    opacity: 1;
+}
+
+.sf-cc-wrap .sf-cc-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+}
+
+@media (min-width: 720px) {
+    .sf-cc-wrap .sf-cc-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* ============================================================
+   Character generation button strip
+   ============================================================ */
+.sf-cc-charbar {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed color-mix(in srgb, var(--sf-cc-border) 90%, transparent);
+    display: flex;
+    justify-content: center;
+}
+
+.sf-cc-charbar .menu_button,
+.sf-cc-charbar .sf-cc-gen-char {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: calc(var(--sf-cc-radius) - 2px);
+    border: 1px dashed color-mix(in srgb, var(--sf-cc-accent) 50%, transparent);
+    background: color-mix(in srgb, var(--sf-cc-accent) 8%, transparent);
+    color: var(--sf-cc-accent);
+    font-weight: 600;
+    font-size: calc(var(--mainFontSize, 14px) * 0.9);
+    cursor: pointer;
+    transition: background .2s ease, border-color .2s ease, transform .12s ease;
+}
+
+.sf-cc-charbar .sf-cc-gen-char:hover {
+    background: color-mix(in srgb, var(--sf-cc-accent) 18%, transparent);
+    border-color: var(--sf-cc-accent);
+    border-style: solid;
+    transform: translateY(-1px);
+}
+
+.sf-cc-charbar .sf-cc-gen-char:active { transform: translateY(0); }
+
+.sf-cc-charbar .sf-cc-gen-char[disabled],
+.sf-cc-charbar-loading .menu_button[disabled] {
+    cursor: wait;
+    opacity: .8;
+    transform: none;
+}
+
+/* Section-char visual accent — make char cards feel like a distinct slot. */
+.sf-cc-section-char .sf-cc-card {
+    border-left: 2px solid color-mix(in srgb, var(--sf-cc-accent) 50%, transparent);
+}
+.sf-cc-section-char .sf-cc-card:hover,
+.sf-cc-section-char .sf-cc-card:focus-visible {
+    border-left-color: var(--sf-cc-accent);
 }
 
 .sf-cc-card {
@@ -1272,12 +1360,46 @@
         justify-content: center;
     }
 
-    /* Single column grid, more vertical breathing room */
+    /* Single column grid, more vertical breathing room. Grid is now nested
+       inside .sf-cc-section so vertical spacing comes from the section, not
+       the grid — don't double up margins. */
     .sf-cc-wrap .sf-cc-grid {
         grid-template-columns: 1fr;
         gap: 6px;
-        margin-top: 8px;
-        padding-top: 8px;
+    }
+
+    /* === Section spacing on mobile === */
+    .sf-cc-section-label {
+        font-size: 10.5px;
+        letter-spacing: .8px;
+        margin-bottom: 6px;
+        gap: 6px;
+    }
+    .sf-cc-section + .sf-cc-section,
+    .sf-cc-charbar + .sf-cc-section {
+        margin-top: 10px;
+        padding-top: 10px;
+    }
+
+    /* === Char-generation button on mobile === */
+    .sf-cc-charbar {
+        margin-top: 10px;
+        padding-top: 10px;
+    }
+    .sf-cc-charbar .sf-cc-gen-char,
+    .sf-cc-charbar .menu_button {
+        width: 100%;              /* full-width tap target on phones */
+        justify-content: center;
+        padding: 12px 14px;       /* >= 44px tap target */
+        min-height: 44px;
+        font-size: calc(var(--mainFontSize, 14px) * 0.92);
+        white-space: normal;      /* wrap long labels instead of overflowing */
+        word-break: break-word;
+        line-height: 1.25;
+    }
+    /* Stronger left accent on touch (1px feels invisible on hi-DPI). */
+    .sf-cc-section-char .sf-cc-card {
+        border-left-width: 3px;
     }
 
     .sf-cc-card {

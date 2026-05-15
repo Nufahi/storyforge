@@ -85,9 +85,17 @@ const defaultSettings = Object.freeze({
     ccTemperature: 0.7,
     ccMaxTokens: 800,
     // === Two-section split: user actions vs character actions ===
-    ccCharOptions: true,                // generate "character could do" section too
-    ccCharCount: 3,                     // how many character options to ask for (2-6)
-    ccUserClickMode: 'name-desc',       // 'name-desc' | 'name-only' | 'desc-only'
+    // ccDuoMode controls the User/Character split behavior:
+    //   'user-only'      — only user actions (original behavior)
+    //   'user-plus-btn'  — user actions + "Generate character options" button strip
+    //   'user-plus-auto' — user actions; clicking a user card auto-triggers char gen
+    //   'both-at-once'   — generate both sections in a single LLM request
+    ccDuoMode: 'user-only',
+    ccCharCount: 3,                     // 2..6
+    // What is sent to the model when user clicks a CHARACTER card.
+    // Acts like a StoryForge tool injection ([OOC: ...]) at depth=1 then
+    // auto-triggers the Send button so the model rolls the action.
+    ccCharActionDepth: 1,
 });
 
 // Models that the user has fetched once via "Fetch models" — cached in memory
@@ -1047,9 +1055,14 @@ const CC_VALID_REVEAL = ['hover', 'always', 'tooltip'];
 // Avoid double-runs: when user clicks the manual button we don't want the
 // CHARACTER_MESSAGE_RENDERED hook to fire on top of it.
 let ccGenerationInProgress = false;
+// True while we're appending a character section to an existing wrap.
+// dropCards listeners check this to avoid wiping the wrap mid-generation
+// (some ST builds emit GENERATION_STARTED for quiet prompts too).
+let ccCharGenInFlight = false;
 let ccLastMessageId = null;
 
 const CC_VALID_API_SOURCES = ['default', 'st-profile', 'builtin'];
+const CC_VALID_DUO_MODES = ['user-only', 'user-plus-btn', 'user-plus-auto', 'both-at-once'];
 
 function ccGetSettings() {
     const s = getSettings();
@@ -1058,7 +1071,9 @@ function ccGetSettings() {
     if (!CC_VALID_MODES.includes(s.ccMode)) s.ccMode = 'request';
     if (!CC_VALID_REVEAL.includes(s.ccReveal)) s.ccReveal = 'hover';
     if (!CC_VALID_API_SOURCES.includes(s.ccApiSource)) s.ccApiSource = 'default';
+    if (!CC_VALID_DUO_MODES.includes(s.ccDuoMode)) s.ccDuoMode = 'user-only';
     s.ccCount = Math.min(Math.max(parseInt(s.ccCount, 10) || 3, 2), 6);
+    s.ccCharCount = Math.min(Math.max(parseInt(s.ccCharCount, 10) || 3, 2), 6);
     s.ccContextSize = Math.min(Math.max(parseInt(s.ccContextSize, 10) || 6, 0), 20);
     const t = parseFloat(s.ccTemperature);
     s.ccTemperature = Number.isFinite(t) ? Math.min(Math.max(t, 0), 2) : 0.7;
@@ -1067,6 +1082,7 @@ function ccGetSettings() {
     return s;
 }
 
+// Build the prompt for USER-side options (default behavior).
 function ccBuildPromptTemplate(count) {
     const s = ccGetSettings();
     if (s.ccCustomPrompt && s.ccCustomPrompt.trim()) {
@@ -1079,6 +1095,38 @@ function ccBuildPromptTemplate(count) {
         `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what the user does, how they sound, and the likely immediate consequence."}]}\n` +
         '```\n' +
         `Rules: ${count} entries, written from the user's perspective in second person, no duplicates, no meta-commentary, no quotes around the JSON.`
+    );
+}
+
+// Build the prompt for CHARACTER-side options.
+// The model proposes what the AI character could plausibly do next, given the
+// current scene. These are NOT what the user does — they're what the character
+// might initiate. The user clicks one to instruct the main LLM to actually
+// roleplay that action.
+function ccBuildCharPromptTemplate(count) {
+    return (
+        `[StoryForge: Choice Cards — Character] Based on the current scene, suggest ${count} distinct, in-character actions the AI CHARACTER (not the user) could plausibly take next. ` +
+        `Focus on actions/decisions/reactions that the character would initiate from their own personality and motives. ` +
+        `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
+        '```json\n' +
+        `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what the character does, said in third person, and the immediate beat that follows."}]}\n` +
+        '```\n' +
+        `Rules: ${count} entries, written from the character's perspective in third person, no duplicates, no meta-commentary, no quotes around the JSON.`
+    );
+}
+
+// Build the prompt for BOTH sections in a single request.
+// We ask the model for an object with two keys: user_choices and character_choices.
+function ccBuildBothPromptTemplate(userCount, charCount) {
+    return (
+        `[StoryForge: Choice Cards — Duo] Based on the current scene and most recent reply, suggest TWO sets of next actions:\n` +
+        ` • ${userCount} actions the USER could take next (second person, user POV)\n` +
+        ` • ${charCount} actions the AI CHARACTER could plausibly take next (third person, character POV)\n` +
+        `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
+        '```json\n' +
+        `{"user_choices":[{"name":"Short label","description":"One or two sentences."}],"character_choices":[{"name":"Short label","description":"One or two sentences."}]}\n` +
+        '```\n' +
+        `Rules: exact counts (${userCount} user, ${charCount} character), no duplicates, no meta-commentary.`
     );
 }
 
@@ -1125,23 +1173,9 @@ function ccExtractJson(text) {
     return null;
 }
 
-function ccParseChoices(rawText) {
-    const jsonStr = ccExtractJson(rawText);
-    if (!jsonStr) return null;
-
-    let parsed;
-    try {
-        parsed = JSON.parse(jsonStr);
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
-
-    const list = Array.isArray(parsed.choices) ? parsed.choices
-        : Array.isArray(parsed) ? parsed
-        : null;
-    if (!list || list.length === 0) return null;
-
+// Take a raw array-of-objects and produce {name, description} entries.
+function ccCleanChoiceArray(list) {
+    if (!Array.isArray(list)) return [];
     const cleaned = [];
     for (const item of list) {
         if (!item || typeof item !== 'object') continue;
@@ -1157,7 +1191,46 @@ function ccParseChoices(rawText) {
         cleaned.push({ name, description });
         if (cleaned.length >= 6) break;
     }
+    return cleaned;
+}
+
+// Returns an array of {name, description} entries.
+// Backwards-compatible: existing callers expect a flat array.
+function ccParseChoices(rawText) {
+    const jsonStr = ccExtractJson(rawText);
+    if (!jsonStr) return null;
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch {
+        return null;
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const list = Array.isArray(parsed.choices) ? parsed.choices
+        : Array.isArray(parsed.user_choices) ? parsed.user_choices
+        : Array.isArray(parsed) ? parsed
+        : null;
+    if (!list) return null;
+    const cleaned = ccCleanChoiceArray(list);
     return cleaned.length >= 2 ? cleaned : null;
+}
+
+// Returns { user: [...], char: [...] } from a "both" prompt response.
+// Either side may be empty. Returns null only if neither key is present
+// or both are unusable.
+function ccParseChoicesDuo(rawText) {
+    const jsonStr = ccExtractJson(rawText);
+    if (!jsonStr) return null;
+    let parsed;
+    try { parsed = JSON.parse(jsonStr); } catch { return null; }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const user = ccCleanChoiceArray(parsed.user_choices || parsed.user || parsed.choices);
+    const char = ccCleanChoiceArray(parsed.character_choices || parsed.char || parsed.character);
+    if (user.length < 2 && char.length < 2) return null;
+    return { user, char };
 }
 
 // === Generation =============================================================
@@ -1167,9 +1240,14 @@ function ccParseChoices(rawText) {
 const CC_SECRET_KEY = 'storyforge_choice_cards_api_key';
 
 // Normalize "https://openrouter.ai/api/v1/" -> "https://openrouter.ai/api/v1".
+// Only http(s) URLs are accepted; everything else returns '' so we don't
+// accidentally hand fetch() something it might misinterpret (data:, file:,
+// javascript: etc. are no-ops in fetch but rejecting them up front gives a
+// clearer error to the user).
 function ccNormalizeUrl(url) {
     if (!url || typeof url !== 'string') return '';
     let trimmed = url.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(trimmed)) return '';
     // Strip trailing /chat/completions if user pasted the full path.
     trimmed = trimmed.replace(/\/chat\/completions$/i, '');
     return trimmed;
@@ -1403,17 +1481,22 @@ async function ccGenerateWithLLM(prompt, profileName) {
     const trimmedProfile = (profileName || '').trim();
 
     if (trimmedProfile) {
-        // Try the Connection Manager slash command via executeSlashCommandsWithOptions.
-        // /profile <name> switches; we instead use /genraw with profile= when available.
-        try {
-            const escaped = trimmedProfile.replace(/"/g, '\\"');
-            const cmd = `/genraw profile="${escaped}" instruct=off ${JSON.stringify(prompt)}`;
-            if (typeof ctx.executeSlashCommandsWithOptions === 'function') {
-                const res = await ctx.executeSlashCommandsWithOptions(cmd, { showOutput: false });
-                if (res?.pipe) return String(res.pipe);
+        // Profile names go straight into a slash-command string, so we
+        // restrict them to a safe charset (letters, digits, dash, underscore,
+        // dot, space). This prevents command injection via crafted profile
+        // names like:  default" | /world set evil_world
+        if (!/^[\w .\-]{1,64}$/.test(trimmedProfile)) {
+            console.warn(`[${MODULE_NAME}] Choice Cards: unsafe profile name, ignoring`, trimmedProfile);
+        } else {
+            try {
+                const cmd = `/genraw profile="${trimmedProfile}" instruct=off ${JSON.stringify(prompt)}`;
+                if (typeof ctx.executeSlashCommandsWithOptions === 'function') {
+                    const res = await ctx.executeSlashCommandsWithOptions(cmd, { showOutput: false });
+                    if (res?.pipe) return String(res.pipe);
+                }
+            } catch (err) {
+                console.warn(`[${MODULE_NAME}] Choice Cards: profile fallback`, err);
             }
-        } catch (err) {
-            console.warn(`[${MODULE_NAME}] Choice Cards: profile fallback`, err);
         }
     }
 
@@ -1428,20 +1511,35 @@ async function ccGenerateWithLLM(prompt, profileName) {
     throw new Error('No suitable text-generation API found on SillyTavern context');
 }
 
+// Dispatch a prompt through the user-selected source and return the raw string.
+async function ccDispatchPrompt(prompt) {
+    const s = ccGetSettings();
+    if (s.ccApiSource === 'builtin') {
+        return await ccCallBuiltinApi({ instructionPrompt: prompt });
+    }
+    if (s.ccApiSource === 'st-profile' && (s.ccProfile || '').trim()) {
+        return await ccGenerateWithLLM(prompt, s.ccProfile);
+    }
+    // 'default' — same connection ST is currently using.
+    return await ccGenerateWithLLM(prompt, '');
+}
+
 async function ccRequestChoices() {
     const s = ccGetSettings();
-    const prompt = ccBuildPromptTemplate(s.ccCount);
-
-    let raw;
-    if (s.ccApiSource === 'builtin') {
-        raw = await ccCallBuiltinApi({ instructionPrompt: prompt });
-    } else if (s.ccApiSource === 'st-profile' && (s.ccProfile || '').trim()) {
-        raw = await ccGenerateWithLLM(prompt, s.ccProfile);
-    } else {
-        // 'default' — same connection ST is currently using.
-        raw = await ccGenerateWithLLM(prompt, '');
-    }
+    const raw = await ccDispatchPrompt(ccBuildPromptTemplate(s.ccCount));
     return ccParseChoices(raw);
+}
+
+async function ccRequestCharChoices() {
+    const s = ccGetSettings();
+    const raw = await ccDispatchPrompt(ccBuildCharPromptTemplate(s.ccCharCount));
+    return ccParseChoices(raw);
+}
+
+async function ccRequestBoth() {
+    const s = ccGetSettings();
+    const raw = await ccDispatchPrompt(ccBuildBothPromptTemplate(s.ccCount, s.ccCharCount));
+    return ccParseChoicesDuo(raw);
 }
 
 // === Rendering ==============================================================
@@ -1460,32 +1558,85 @@ function ccGetLastBotMessageEl() {
     return $mes.length ? $mes : null;
 }
 
-function ccRenderCards(choices, messageId, elapsedMs) {
-    ccRemoveCards();
-    if (!Array.isArray(choices) || choices.length === 0) return;
-
-    const s = ccGetSettings();
-    const $host = ccGetLastBotMessageEl();
-    if (!$host) return;
-
-    const cards = choices.map((c, idx) => {
+// Build a grid of <.sf-cc-card> from a choices array. side must be 'user' or
+// 'char'; anything else is rejected so an accidental future call site can't
+// turn into an attribute-injection vector.
+function ccBuildCardsHtml(choices, side, revealMode) {
+    const safeSide = side === 'char' ? 'char' : 'user';
+    return choices.map((c, idx) => {
         const name = escapeHtml(c.name);
         const desc = escapeHtml(c.description || '');
-        const titleAttr = s.ccReveal === 'tooltip' && desc ? ` title="${desc}"` : '';
+        // desc has been escapeHtml'd, so `"` is already &quot; — safe inside
+        // double-quoted title attribute.
+        const titleAttr = revealMode === 'tooltip' && desc ? ` title="${desc}"` : '';
         return `
-        <div class="sf-cc-card" data-cc-idx="${idx}" tabindex="0" role="button"${titleAttr}>
+        <div class="sf-cc-card" data-cc-idx="${idx}" data-cc-side="${safeSide}" tabindex="0" role="button"${titleAttr}>
             <div class="sf-cc-card-index">${idx + 1}</div>
             <div class="sf-cc-card-body">
                 <div class="sf-cc-card-name">${name}</div>
-                ${desc && s.ccReveal !== 'tooltip'
+                ${desc && revealMode !== 'tooltip'
                     ? `<div class="sf-cc-card-desc">${desc}</div>`
                     : ''}
             </div>
         </div>`;
     }).join('');
+}
+
+// choicesOrDuo can be either an array (user-only) or {user, char} object.
+function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
+    ccRemoveCards();
+
+    // Normalize input to {user, char} shape.
+    let userChoices = [];
+    let charChoices = [];
+    if (Array.isArray(choicesOrDuo)) {
+        userChoices = choicesOrDuo;
+    } else if (choicesOrDuo && typeof choicesOrDuo === 'object') {
+        userChoices = Array.isArray(choicesOrDuo.user) ? choicesOrDuo.user : [];
+        charChoices = Array.isArray(choicesOrDuo.char) ? choicesOrDuo.char : [];
+    }
+    if (userChoices.length === 0 && charChoices.length === 0) return;
+
+    const s = ccGetSettings();
+    const $host = ccGetLastBotMessageEl();
+    if (!$host) return;
+
+    const showCharBtn = s.ccDuoMode === 'user-plus-btn' && charChoices.length === 0;
+
+    // Sections HTML
+    let sectionsHtml = '';
+    if (userChoices.length) {
+        sectionsHtml += `
+            <div class="sf-cc-section sf-cc-section-user">
+                <div class="sf-cc-section-label">
+                    <i class="fa-solid fa-user"></i>
+                    <span>What you do</span>
+                </div>
+                <div class="sf-cc-grid">${ccBuildCardsHtml(userChoices, 'user', s.ccReveal)}</div>
+            </div>`;
+    }
+    if (showCharBtn) {
+        sectionsHtml += `
+            <div class="sf-cc-charbar">
+                <button class="sf-cc-gen-char menu_button" type="button">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span>Generate character options</span>
+                </button>
+            </div>`;
+    }
+    if (charChoices.length) {
+        sectionsHtml += `
+            <div class="sf-cc-section sf-cc-section-char">
+                <div class="sf-cc-section-label">
+                    <i class="fa-solid fa-mask"></i>
+                    <span>What the character could do</span>
+                </div>
+                <div class="sf-cc-grid">${ccBuildCardsHtml(charChoices, 'char', s.ccReveal)}</div>
+            </div>`;
+    }
 
     const collapsedClass = s.ccCollapsed ? ' sf-cc-collapsed' : '';
-    const count = choices.length;
+    const totalCount = userChoices.length + charChoices.length;
     const durationStr = Number.isFinite(elapsedMs) ? ccFormatDuration(elapsedMs) : '';
     const durationBadge = durationStr
         ? `<span class="sf-cc-duration" title="Generation time">
@@ -1500,7 +1651,7 @@ function ccRenderCards(choices, messageId, elapsedMs) {
                 <i class="fa-solid fa-chevron-right sf-cc-chevron"></i>
                 <i class="fa-solid fa-comments sf-cc-header-icon"></i>
                 <span class="sf-cc-header-label">Choose your action</span>
-                <span class="sf-cc-count-badge">${count}</span>
+                <span class="sf-cc-count-badge">${totalCount}</span>
                 ${durationBadge}
                 <span class="sf-cc-spacer"></span>
                 <button class="sf-cc-regen menu_button" title="Regenerate choices" tabindex="-1">
@@ -1510,7 +1661,7 @@ function ccRenderCards(choices, messageId, elapsedMs) {
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
-            <div class="sf-cc-grid">${cards}</div>
+            <div class="sf-cc-body">${sectionsHtml}</div>
         </div>
     `);
 
@@ -1519,7 +1670,8 @@ function ccRenderCards(choices, messageId, elapsedMs) {
     // Insert as a sibling immediately after the message bubble.
     $host.after(wrap);
     // Store choice data on DOM so click handler doesn't need a closure.
-    wrap.data('cc-choices', choices);
+    wrap.data('cc-user', userChoices);
+    wrap.data('cc-char', charChoices);
 
     // Scroll the new block into view if the user is near the bottom.
     const chat = document.getElementById('chat');
@@ -1531,9 +1683,39 @@ function ccRenderCards(choices, messageId, elapsedMs) {
     }
 }
 
+// Inject a fresh character section into the existing wrap (in place).
+// Called by the "Generate character options" button and by user-plus-auto mode.
+function ccAppendCharSection(charChoices) {
+    if (!Array.isArray(charChoices) || charChoices.length === 0) return;
+    const $wrap = $('.sf-cc-wrap').first();
+    if (!$wrap.length) return;
+
+    const s = ccGetSettings();
+    // Remove the char-bar button (if present) and any existing char section.
+    $wrap.find('.sf-cc-charbar, .sf-cc-section-char').remove();
+
+    const html = `
+        <div class="sf-cc-section sf-cc-section-char">
+            <div class="sf-cc-section-label">
+                <i class="fa-solid fa-mask"></i>
+                <span>What the character could do</span>
+            </div>
+            <div class="sf-cc-grid">${ccBuildCardsHtml(charChoices, 'char', s.ccReveal)}</div>
+        </div>`;
+    $wrap.find('.sf-cc-body').append(html);
+    $wrap.data('cc-char', charChoices);
+
+    // Update the count badge.
+    const userCount = ($wrap.data('cc-user') || []).length;
+    $wrap.find('.sf-cc-count-badge').text(String(userCount + charChoices.length));
+}
+
 // === Insertion ==============================================================
 
-function ccApplyChoice(choice) {
+// User-side card: insert the action text into the send bar, optionally autosend.
+// When `suppressSend` is true (e.g. user-plus-auto mode), we never auto-fire
+// the Send button — the user is expected to wait for character options first.
+function ccApplyUserChoice(choice, { suppressSend = false } = {}) {
     const s = ccGetSettings();
     const $textarea = $('#send_textarea');
     if (!$textarea.length) return;
@@ -1550,11 +1732,100 @@ function ccApplyChoice(choice) {
         $textarea[0].setSelectionRange(pos, pos);
     } catch { /* ignore */ }
 
-    if (s.ccClickAction === 'send') {
+    if (s.ccClickAction === 'send' && !suppressSend) {
         // Trigger the actual send button if exists.
         const sendBtn = document.getElementById('send_but');
         if (sendBtn) sendBtn.click();
     }
+}
+
+// Character-side card: inject an OOC system prompt that instructs the main
+// model to make the character perform the chosen action, then trigger Send so
+// the model rolls a new reply incorporating it. Behaves like a StoryForge tool.
+function ccApplyCharChoice(choice) {
+    const s = ccGetSettings();
+    const ctx = SillyTavern.getContext();
+
+    // Sanitize text before interpolating into a prompt: collapse stray
+    // double-quotes (so the quoted span can't be closed mid-string) and
+    // strip control chars / fence markers that could be used to break out
+    // of the surrounding instruction and try to prompt-inject the main
+    // model. The card content itself is LLM-generated, so even though it
+    // came from "us", we treat it as untrusted text.
+    const sanitize = (s) => String(s || '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/```+/g, '')
+        .replace(/"/g, "'")
+        .trim();
+    const name = sanitize(choice.name).slice(0, CC_MAX_NAME);
+    const desc = sanitize(choice.description).slice(0, CC_MAX_DESC);
+    const text = [name, desc].filter(Boolean).join(' — ');
+    if (!text) {
+        toastr.warning('Empty character action', 'StoryForge');
+        return;
+    }
+    const prompt =
+        `[StoryForge: Character action] In your next response, have the character ` +
+        `perform the following action: "${text}". Stay in character, describe it ` +
+        `vividly, and let the consequences flow naturally from the scene.`;
+
+    // Use a dedicated injection key so it doesn't collide with regular tools.
+    const key = `${MODULE_NAME}_cc_char_action`;
+    const depth = Math.max(0, Math.min(8, s.ccCharActionDepth | 0));
+    ctx.setExtensionPrompt(key, prompt, POSITION_IN_CHAT, depth, true, ROLE_SYSTEM);
+
+    // Auto-clear after generation ends so the prompt doesn't leak into
+    // subsequent replies. ST's eventSource is a thin EventEmitter; we use
+    // a manual once-style pattern because not every ST build exposes .once.
+    //
+    // We also subscribe to CHAT_CHANGED / MESSAGE_SWIPED so the injection
+    // never survives a context switch, and arm a 60-second hard fallback
+    // timeout so a failed send (button disabled, ST mid-busy) cannot leak
+    // listeners forever.
+    try {
+        const { eventSource, event_types } = ctx;
+        let cleared = false;
+        let timeoutId = null;
+        const clear = () => {
+            if (cleared) return;
+            cleared = true;
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            ctx.setExtensionPrompt(key, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM);
+            const off = eventSource.removeListener || eventSource.off;
+            for (const ev of [
+                event_types.GENERATION_ENDED,
+                event_types.GENERATION_STOPPED,
+                event_types.CHAT_CHANGED,
+                event_types.MESSAGE_SWIPED,
+            ]) {
+                try { off?.call(eventSource, ev, clear); } catch { /* ignore */ }
+            }
+        };
+        eventSource.on(event_types.GENERATION_ENDED, clear);
+        eventSource.on(event_types.GENERATION_STOPPED, clear);
+        eventSource.on(event_types.CHAT_CHANGED, clear);
+        eventSource.on(event_types.MESSAGE_SWIPED, clear);
+        timeoutId = setTimeout(clear, 60000);
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] Choice Cards: char-action cleanup hook failed`, err);
+    }
+
+    // Fire the send button to let the model generate a fresh reply with the
+    // injected guidance. We don't put anything in the textarea — the OOC
+    // instruction is enough; the user's textarea stays as they left it.
+    const sendBtn = document.getElementById('send_but');
+    const isDisabled = sendBtn && (sendBtn.disabled
+        || sendBtn.classList.contains('disabled')
+        || sendBtn.getAttribute('aria-disabled') === 'true');
+    if (!sendBtn || isDisabled) {
+        toastr.warning(
+            'Character action queued, but Send is unavailable (generation already in progress?). Send manually when ready.',
+            'StoryForge', { timeOut: 4000 },
+        );
+        return;
+    }
+    toastr.info(`Character will: ${choice.name}`, 'StoryForge', { timeOut: 2500 });
+    sendBtn.click();
 }
 
 // === Main entry point =======================================================
@@ -1611,18 +1882,31 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         }, 100);
     }
     try {
-        let choices = null;
+        let choices = null;        // flat user array OR duo {user, char}
 
-        if (s.ccMode === 'parse' || s.ccMode === 'hybrid') {
-            // Try to find an embedded JSON block in the last bot message text.
-            const ctx = SillyTavern.getContext();
-            const lastMes = ctx.chat?.[ctx.chat.length - 1];
-            if (lastMes && !lastMes.is_user && !lastMes.is_system) {
-                choices = ccParseChoices(lastMes.mes || '');
+        // "Both at once" path: single LLM call, render both sections.
+        if (s.ccDuoMode === 'both-at-once' && s.ccMode !== 'parse') {
+            const duo = await ccRequestBoth();
+            if (duo) {
+                choices = {
+                    user: (duo.user || []).slice(0, s.ccCount),
+                    char: (duo.char || []).slice(0, s.ccCharCount),
+                };
             }
         }
-        if (!choices && (s.ccMode === 'request' || s.ccMode === 'hybrid')) {
-            choices = await ccRequestChoices();
+
+        if (!choices) {
+            if (s.ccMode === 'parse' || s.ccMode === 'hybrid') {
+                // Try to find an embedded JSON block in the last bot message text.
+                const ctx = SillyTavern.getContext();
+                const lastMes = ctx.chat?.[ctx.chat.length - 1];
+                if (lastMes && !lastMes.is_user && !lastMes.is_system) {
+                    choices = ccParseChoices(lastMes.mes || '');
+                }
+            }
+            if (!choices && (s.ccMode === 'request' || s.ccMode === 'hybrid')) {
+                choices = await ccRequestChoices();
+            }
         }
 
         const elapsedMs = Math.round(performance.now() - startedAt);
@@ -1633,7 +1917,9 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
             if (!silent) toastr.warning('Could not generate choices', 'StoryForge', { timeOut: 2500 });
             return;
         }
-        ccRenderCards(choices.slice(0, s.ccCount), messageId, elapsedMs);
+        // If user-array, clamp to ccCount; if duo, already clamped above.
+        const payload = Array.isArray(choices) ? choices.slice(0, s.ccCount) : choices;
+        ccRenderCards(payload, messageId, elapsedMs);
     } catch (err) {
         console.error(`[${MODULE_NAME}] Choice Cards error`, err);
         if (tickHandle) clearInterval(tickHandle);
@@ -1641,6 +1927,66 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         if (!silent) toastr.error('Choice generation failed (see console)', 'StoryForge');
     } finally {
         ccGenerationInProgress = false;
+    }
+}
+
+// Generate character options on demand and append them to the existing wrap.
+// Used by the "Generate character options" button (user-plus-btn mode) and
+// by the user-plus-auto auto-trigger after a user card is picked.
+async function ccGenerateCharIntoExistingWrap({ silent = false } = {}) {
+    if (ccCharGenInFlight) return;
+    const s = ccGetSettings();
+    if (!s.ccEnabled) return;
+
+    const $wrap = $('.sf-cc-wrap').first();
+    if (!$wrap.length) return;
+
+    ccCharGenInFlight = true;
+    // Swap the button to a loading state, or inject a temporary loader.
+    const $existingBtn = $wrap.find('.sf-cc-gen-char');
+    let restoreBtnHtml = null;
+    if ($existingBtn.length) {
+        restoreBtnHtml = $existingBtn.html();
+        $existingBtn.prop('disabled', true)
+            .html('<i class="fa-solid fa-spinner fa-spin"></i><span>Generating character options…</span>');
+    } else {
+        // No existing button (e.g. user-plus-auto mode). Add a transient one.
+        $wrap.find('.sf-cc-body').append(`
+            <div class="sf-cc-charbar sf-cc-charbar-loading">
+                <button class="menu_button" type="button" disabled>
+                    <i class="fa-solid fa-spinner fa-spin"></i>
+                    <span>Generating character options…</span>
+                </button>
+            </div>
+        `);
+    }
+
+    try {
+        const choices = await ccRequestCharChoices();
+        // Drop any loading placeholder we may have added.
+        $wrap.find('.sf-cc-charbar-loading').remove();
+
+        if (!choices || choices.length === 0) {
+            if (!silent) toastr.warning('No character options generated', 'StoryForge', { timeOut: 2500 });
+            if ($existingBtn.length && restoreBtnHtml !== null) {
+                $existingBtn.prop('disabled', false).html(restoreBtnHtml);
+            }
+            return;
+        }
+        // Re-check the wrap is still in the DOM. Even with the in-flight
+        // guard, the user could have manually dismissed the wrap (X button)
+        // or switched chats while waiting on the network.
+        if (!document.body.contains($wrap[0])) return;
+        ccAppendCharSection(choices.slice(0, s.ccCharCount));
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] Choice Cards: char generation failed`, err);
+        $wrap.find('.sf-cc-charbar-loading').remove();
+        if ($existingBtn.length && restoreBtnHtml !== null) {
+            $existingBtn.prop('disabled', false).html(restoreBtnHtml);
+        }
+        if (!silent) toastr.error('Character options generation failed', 'StoryForge');
+    } finally {
+        ccCharGenInFlight = false;
     }
 }
 
@@ -1656,19 +2002,43 @@ function ccToggleWrap($wrap, force) {
 
 function ccBindCardEvents() {
     // Delegated so it survives re-renders.
-    $(document).off('click.sf-cc keydown.sf-cc click.sf-cc-close click.sf-cc-regen click.sf-cc-header keydown.sf-cc-header');
+    $(document).off('click.sf-cc keydown.sf-cc click.sf-cc-close click.sf-cc-regen click.sf-cc-header keydown.sf-cc-header click.sf-cc-genchar');
 
     $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
         e.preventDefault();
         const $wrap = $(this).closest('.sf-cc-wrap');
-        const choices = $wrap.data('cc-choices');
+        const side = $(this).attr('data-cc-side') || 'user';
+        const list = side === 'char'
+            ? ($wrap.data('cc-char') || [])
+            : ($wrap.data('cc-user') || []);
         const idx = parseInt($(this).attr('data-cc-idx'), 10);
-        if (!Array.isArray(choices) || !Number.isInteger(idx)) return;
-        const choice = choices[idx];
+        if (!Array.isArray(list) || !Number.isInteger(idx)) return;
+        const choice = list[idx];
         if (!choice) return;
-        ccApplyChoice(choice);
-        $wrap.addClass('sf-cc-fading');
-        setTimeout(() => $wrap.remove(), 250);
+
+        if (side === 'char') {
+            // Char click → OOC injection + autosend. The wrap will be cleared
+            // by the MESSAGE_SENT / GENERATION_STARTED hooks.
+            ccApplyCharChoice(choice);
+            $wrap.addClass('sf-cc-fading');
+            return;
+        }
+
+        // User card. In user-plus-auto mode we keep the wrap visible,
+        // suppress autosend, and immediately kick off character-option
+        // generation. Otherwise we apply normally and fade the wrap away.
+        const s = ccGetSettings();
+        const isAuto = s.ccDuoMode === 'user-plus-auto'
+            && ($wrap.data('cc-char') || []).length === 0;
+
+        ccApplyUserChoice(choice, { suppressSend: isAuto });
+
+        if (isAuto) {
+            ccGenerateCharIntoExistingWrap({ silent: true });
+        } else {
+            $wrap.addClass('sf-cc-fading');
+            setTimeout(() => $wrap.remove(), 250);
+        }
     });
 
     $(document).on('keydown.sf-cc', '.sf-cc-card', function (e) {
@@ -1688,6 +2058,12 @@ function ccBindCardEvents() {
         e.preventDefault();
         e.stopPropagation();
         ccGenerateAndRender({ silent: false });
+    });
+
+    $(document).on('click.sf-cc-genchar', '.sf-cc-gen-char', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        ccGenerateCharIntoExistingWrap({ silent: false });
     });
 
     // Toggle collapse on header click (ignore clicks on header buttons).
@@ -1717,7 +2093,11 @@ function ccBindStEvents() {
     // Auto-generate after each bot reply (only if ccAuto is enabled).
     // In 'parse' mode this is essentially free (no extra LLM call), so users
     // typically want ccAuto + ccMode='parse' together.
+    // Either way, any wrap left over from the *previous* reply must die when
+    // a new reply arrives — otherwise stale cards stay attached to the
+    // now-second-to-last message.
     const onBotMessage = (msgId) => {
+        ccRemoveCards();
         const s = ccGetSettings();
         if (!s.ccEnabled || !s.ccAuto) return;
         ccLastMessageId = msgId;
@@ -1728,7 +2108,13 @@ function ccBindStEvents() {
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onBotMessage);
 
     // Drop cards when user sends a new message, swipes, or generation starts.
-    const dropCards = () => ccRemoveCards();
+    // The ccCharGenInFlight guard prevents wiping our wrap while we're
+    // adding the character section to it (the quiet prompt for char options
+    // can also emit GENERATION_STARTED depending on ST build).
+    const dropCards = () => {
+        if (ccCharGenInFlight) return;
+        ccRemoveCards();
+    };
     eventSource.on(event_types.MESSAGE_SENT, dropCards);
     eventSource.on(event_types.GENERATION_STARTED, dropCards);
     eventSource.on(event_types.MESSAGE_SWIPED, dropCards);
@@ -1976,11 +2362,27 @@ function ccAddSettingsPanel() {
                         </div>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-clickaction">On click</label>
+                        <label for="sf-cc-clickaction">User card click</label>
                         <select id="sf-cc-clickaction">
                             <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>Insert into input</option>
                             <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>Insert and send</option>
                         </select>
+                    </div>
+                    <div class="sf-cc-form-row">
+                        <label for="sf-cc-duomode">Character options</label>
+                        <select id="sf-cc-duomode">
+                            <option value="user-only"      ${s.ccDuoMode === 'user-only'      ? 'selected' : ''}>User actions only</option>
+                            <option value="user-plus-btn"  ${s.ccDuoMode === 'user-plus-btn'  ? 'selected' : ''}>User actions + "Generate for character" button</option>
+                            <option value="user-plus-auto" ${s.ccDuoMode === 'user-plus-auto' ? 'selected' : ''}>Auto-generate character options after user picks</option>
+                            <option value="both-at-once"   ${s.ccDuoMode === 'both-at-once'   ? 'selected' : ''}>Generate user + character at once (one request)</option>
+                        </select>
+                    </div>
+                    <div class="sf-cc-form-row sf-cc-charcount-row" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
+                        <label for="sf-cc-charcount">Character options count (2-6)</label>
+                        <input type="number" id="sf-cc-charcount" min="2" max="6" value="${s.ccCharCount}">
+                    </div>
+                    <div class="sf-qi-info sf-cc-charinfo" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
+                        Tapping a <b>character</b> card injects an OOC instruction and immediately fires the main model, so the character performs the chosen action in the next reply.
                     </div>
                     <div class="sf-cc-form-row sf-cc-form-row-block">
                         <label for="sf-cc-custom">Custom prompt template (optional, use {{count}})</label>
@@ -2042,6 +2444,17 @@ function ccAddSettingsPanel() {
     });
     panel.on('change', '#sf-cc-clickaction', function () {
         ccGetSettings().ccClickAction = $(this).val();
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-duomode', function () {
+        const v = $(this).val();
+        ccGetSettings().ccDuoMode = v;
+        saveSettings();
+        const isUserOnly = v === 'user-only';
+        panel.find('.sf-cc-charcount-row, .sf-cc-charinfo').toggle(!isUserOnly);
+    });
+    panel.on('input', '#sf-cc-charcount', function () {
+        ccGetSettings().ccCharCount = parseInt($(this).val(), 10) || 3;
         saveSettings();
     });
     panel.on('input', '#sf-cc-custom', function () {
@@ -2282,7 +2695,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.5 (Choice Cards: content-sized height fix)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.4.1 (Choice Cards: user + character options)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2309,7 +2722,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.5 loaded`);
+        console.log(`[${MODULE_NAME}] v1.4.1 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
