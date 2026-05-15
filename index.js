@@ -84,6 +84,10 @@ const defaultSettings = Object.freeze({
     ccContextSize: 6,                   // number of last chat messages to send (0-20)
     ccTemperature: 0.7,
     ccMaxTokens: 800,
+    // === Two-section split: user actions vs character actions ===
+    ccCharOptions: true,                // generate "character could do" section too
+    ccCharCount: 3,                     // how many character options to ask for (2-6)
+    ccUserClickMode: 'name-desc',       // 'name-desc' | 'name-only' | 'desc-only'
 });
 
 // Models that the user has fetched once via "Fetch models" — cached in memory
@@ -2278,7 +2282,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.4 (Choice Cards: fix non-OpenRouter providers)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.5 (Choice Cards: content-sized height fix)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2305,7 +2309,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.4 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.5 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

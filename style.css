@@ -559,10 +559,12 @@
     -webkit-backdrop-filter: blur(var(--sf-cc-blur));
     backdrop-filter: blur(var(--sf-cc-blur));
     /* Behave well inside #chat regardless of whether it's flex/grid:
-       - flex: 1 0 100% so a flex-row parent can't shrink us to content
-       - align-self/justify-self: stretch in case parent is flex-column or grid
+       - flex-basis: auto + grow 0 so HEIGHT stays content-sized when #chat
+         is flex-column (previously flex: 1 0 100% caused the wrap to expand
+         to fill the whole chat area, making the loading placeholder huge)
+       - align-self/justify-self: stretch make us span full cross-axis (width)
        - grid-column: 1 / -1 forces full row span in CSS Grid layouts */
-    flex: 1 0 100%;
+    flex: 0 0 auto;
     align-self: stretch;
     justify-self: stretch;
     grid-column: 1 / -1;
@@ -824,8 +826,19 @@
 }
 
 /* === Loading placeholder === */
+.sf-cc-wrap.sf-cc-loading {
+    /* Height equals content height — header + padding. No room left for
+       the (non-existent) grid, so the block stays as a single thin bar.
+       Tighter vertical padding so the placeholder doesn't look empty. */
+    min-height: 0;
+    height: auto;
+    flex: 0 0 auto;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
 .sf-cc-wrap.sf-cc-loading .sf-cc-header {
     cursor: default;
+    min-height: 0;
 }
 .sf-cc-wrap.sf-cc-loading .sf-cc-header:hover {
     color: var(--sf-cc-text-dim);
@@ -1201,13 +1214,15 @@
         /* Force full width inside #chat on phones, regardless of the parent's
            layout mode (flex-row / flex-column / grid / block). Mobile themes
            often shrink siblings of .mes to content width — we explicitly
-           override that. */
+           override that. Width comes from width:100% (works in any layout);
+           we deliberately do NOT touch flex-basis so the height stays
+           content-sized. */
         width: calc(100% - 4px) !important;
         max-width: calc(100% - 4px) !important;
         margin: 4px 2px 10px 2px;
         padding: 8px 10px;
         --sf-cc-radius: 8px;
-        flex: 1 1 100%;
+        flex: 0 0 auto;
         align-self: stretch;
     }
 
