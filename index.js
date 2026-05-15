@@ -1290,18 +1290,38 @@ async function ccCallBuiltinApi({ instructionPrompt, signal }) {
         stream: false,
     };
 
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            // OpenRouter etiquette headers (ignored by other providers).
-            'HTTP-Referer': location.origin,
-            'X-Title': 'SillyTavern StoryForge',
-        },
-        body: JSON.stringify(body),
-        signal,
-    });
+    // Only send OpenRouter-specific headers when actually talking to OpenRouter.
+    // Other providers will allow exactly the headers their CORS policy lists,
+    // and any extra (e.g. HTTP-Referer, X-Title) triggers preflight failure
+    // even though those headers are harmless on the server side.
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+    };
+    if (/openrouter\.ai/i.test(baseUrl)) {
+        headers['HTTP-Referer'] = location.origin;
+        headers['X-Title'] = 'SillyTavern StoryForge';
+    }
+
+    let res;
+    try {
+        res = await fetch(`${baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal,
+        });
+    } catch (netErr) {
+        // fetch() rejects with TypeError on CORS-preflight fail, DNS fail,
+        // SSL fail, or generic 'Failed to fetch'. Help the user diagnose.
+        const msg = String(netErr?.message || netErr || '');
+        throw new Error(
+            `Network error: ${msg}. ` +
+            `Likely causes: CORS blocked by server, wrong URL, ` +
+            `SSL error, or server unreachable. Open DevTools > Network ` +
+            `tab to inspect the failed request.`
+        );
+    }
 
     if (!res.ok) {
         let errText = '';
@@ -1310,9 +1330,20 @@ async function ccCallBuiltinApi({ instructionPrompt, signal }) {
     }
 
     const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content;
+    // OpenAI-compatible shape: choices[0].message.content
+    // Some routers (e.g. Anthropic-style) put it at content[0].text
+    let text = data?.choices?.[0]?.message?.content;
     if (typeof text !== 'string') {
-        throw new Error('Unexpected response shape (no choices[0].message.content)');
+        // Fallback shapes some non-strict providers return.
+        text = data?.choices?.[0]?.text
+            ?? data?.choices?.[0]?.delta?.content
+            ?? data?.content?.[0]?.text
+            ?? data?.message?.content
+            ?? null;
+    }
+    if (typeof text !== 'string') {
+        throw new Error('Unexpected response shape: ' +
+            JSON.stringify(data).slice(0, 300));
     }
     return text;
 }
@@ -1324,10 +1355,21 @@ async function ccFetchModels() {
     if (!baseUrl) throw new Error('API URL is empty');
     const apiKey = await ccLoadApiKey();
 
-    const res = await fetch(`${baseUrl}/models`, {
-        method: 'GET',
-        headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
-    });
+    let res;
+    try {
+        res = await fetch(`${baseUrl}/models`, {
+            method: 'GET',
+            headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
+        });
+    } catch (netErr) {
+        const msg = String(netErr?.message || netErr || '');
+        throw new Error(
+            `Network error: ${msg}. ` +
+            `Likely causes: CORS blocked, wrong URL, SSL failure. ` +
+            `Try removing the key (some routers allow /models unauthenticated).`
+        );
+    }
+
     if (!res.ok) {
         let errText = '';
         try { errText = (await res.text()).slice(0, 200); } catch { /* ignore */ }
@@ -2236,7 +2278,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.3.3 (Choice Cards: full-width on mobile)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.3.4 (Choice Cards: fix non-OpenRouter providers)...`);
     try {
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
@@ -2263,7 +2305,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.3.3 loaded`);
+        console.log(`[${MODULE_NAME}] v1.3.4 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
