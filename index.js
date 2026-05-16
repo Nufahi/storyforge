@@ -3,6 +3,86 @@ const extPath = `scripts/extensions/third-party/${MODULE_NAME}`;
 const POSITION_IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
 
+// ==== i18n =================================================================
+// Lightweight translation layer. Strings live in i18n/<lang>.json next to
+// this file. Language is auto-detected from SillyTavern's stored locale,
+// falling back to navigator.language and finally to English.
+
+const I18N_FALLBACK = 'en';
+const I18N_SUPPORTED = ['en', 'ru'];
+let I18N_LANG = I18N_FALLBACK;
+let I18N_STRINGS = {};
+let I18N_FALLBACK_STRINGS = {};
+
+function i18nDetectLang() {
+    // 1. Explicit ST locale (set via /lang or top-bar selector). Different
+    //    ST versions stash it in different places — try them all.
+    const candidates = [];
+    try {
+        const ctx = SillyTavern?.getContext?.();
+        if (ctx) {
+            candidates.push(ctx.mainApi, ctx.locale, ctx.language);
+            candidates.push(ctx?.powerUserSettings?.locale);
+            candidates.push(ctx?.accountStorage?.getItem?.('language'));
+        }
+    } catch { /* ignore */ }
+    try { candidates.push(localStorage.getItem('language')); } catch { /* ignore */ }
+    try { candidates.push(navigator.language); } catch { /* ignore */ }
+
+    for (const raw of candidates) {
+        if (typeof raw !== 'string') continue;
+        const lang = raw.toLowerCase().split(/[-_]/)[0];
+        if (I18N_SUPPORTED.includes(lang)) return lang;
+    }
+    return I18N_FALLBACK;
+}
+
+async function i18nLoad() {
+    I18N_LANG = i18nDetectLang();
+    // Always load English as the fallback so missing keys in other locales
+    // never produce raw key strings in the UI.
+    try {
+        const res = await fetch(`/${extPath}/i18n/${I18N_FALLBACK}.json`);
+        if (res.ok) I18N_FALLBACK_STRINGS = await res.json();
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] i18n: failed to load fallback (${I18N_FALLBACK})`, err);
+    }
+    if (I18N_LANG === I18N_FALLBACK) {
+        I18N_STRINGS = I18N_FALLBACK_STRINGS;
+        return;
+    }
+    try {
+        const res = await fetch(`/${extPath}/i18n/${I18N_LANG}.json`);
+        if (res.ok) {
+            I18N_STRINGS = await res.json();
+        } else {
+            console.warn(`[${MODULE_NAME}] i18n: ${I18N_LANG} not available, using ${I18N_FALLBACK}`);
+            I18N_STRINGS = I18N_FALLBACK_STRINGS;
+            I18N_LANG = I18N_FALLBACK;
+        }
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] i18n: failed to load ${I18N_LANG}`, err);
+        I18N_STRINGS = I18N_FALLBACK_STRINGS;
+        I18N_LANG = I18N_FALLBACK;
+    }
+}
+
+// Resolve a key, optionally substituting {{var}} placeholders.
+// {{app}} is always available and resolves to the localized app name (or
+// the literal "StoryForge" if i18n hasn't loaded yet).
+function t(key, params) {
+    let str = I18N_STRINGS[key];
+    if (str === undefined) str = I18N_FALLBACK_STRINGS[key];
+    if (str === undefined) {
+        // Last-ditch fallback: surface the key so missing translations are
+        // visible during development rather than producing empty strings.
+        return key;
+    }
+    const appName = I18N_STRINGS.app || I18N_FALLBACK_STRINGS.app || 'StoryForge';
+    const all = { app: appName, ...(params || {}) };
+    return str.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in all ? String(all[k]) : m));
+}
+
 // ==== Security helpers ====
 // Escape user-provided strings before interpolating into HTML. Without this
 // any user-controlled field (tool label, QI name, imported JSON, etc.) can
@@ -74,7 +154,8 @@ const defaultSettings = Object.freeze({
     ccReveal: 'hover',                  // 'hover' | 'always' | 'tooltip'
     ccProfile: '',                      // connection profile name; '' = current
     ccClickAction: 'insert',            // 'insert' | 'send'
-    ccCustomPrompt: '',                 // overrides default generation template
+    ccCustomPrompt: '',                 // overrides default user-prompt template
+    ccCustomCharPrompt: '',             // overrides default char-prompt template
     ccSendBarButton: true,
     ccCollapsed: true,                  // start collapsed (header only, click to expand)
     // === Built-in API profile (own endpoint, cheaper model) ===
@@ -113,8 +194,8 @@ function getSettings() {
     if (s.customTools || s.customPrompts) {
         const base = s.tools || structuredClone(DEFAULT_TOOLS);
         if (s.customPrompts) {
-            for (const t of base) {
-                if (s.customPrompts[t.id]?.trim()) t.prompt = s.customPrompts[t.id].trim();
+            for (const tool of base) {
+                if (s.customPrompts[tool.id]?.trim()) tool.prompt = s.customPrompts[tool.id].trim();
             }
         }
         if (s.customTools) {
@@ -144,24 +225,25 @@ function saveSettings() {
 
 function injectTool(toolId) {
     const settings = getSettings();
+    const APP = t('app');
     if (!settings.enabled) {
-        toastr.warning('StoryForge is disabled', 'StoryForge');
+        toastr.warning(t('common.disabled'), APP);
         return false;
     }
     if (activeInjections.has(toolId)) {
         clearTool(toolId);
-        const t = getTools().find(x => x.id === toolId);
-        toastr.info(`${t?.label || 'Tool'} cleared`, 'StoryForge', { timeOut: 2000 });
+        const tool = getTools().find(x => x.id === toolId);
+        toastr.info(t('tool.cleared', { name: tool?.label || t('common.tool') }), APP, { timeOut: 2000 });
         return false;
     }
-    const tool = getTools().find(t => t.id === toolId);
+    const tool = getTools().find(x => x.id === toolId);
     if (!tool || !tool.prompt?.trim()) return false;
     SillyTavern.getContext().setExtensionPrompt(
         `${MODULE_NAME}_${toolId}`, tool.prompt, POSITION_IN_CHAT, settings.depth, true, ROLE_SYSTEM
     );
     activeInjections.set(toolId, true);
     updateBadge();
-    toastr.success(`${tool.label} queued`, 'StoryForge', { timeOut: 2500 });
+    toastr.success(t('tool.queued', { name: tool.label }), APP, { timeOut: 2500 });
     return true;
 }
 
@@ -197,16 +279,16 @@ function deleteTool(toolId) {
 }
 
 function updateToolPrompt(toolId, newPrompt) {
-    const t = getTools().find(x => x.id === toolId);
-    if (t) { t.prompt = newPrompt; saveSettings(); }
+    const tool = getTools().find(x => x.id === toolId);
+    if (tool) { tool.prompt = newPrompt; saveSettings(); }
 }
 
 function renameTool(toolId, newLabel) {
-    const t = getTools().find(x => x.id === toolId);
-    if (t && newLabel.trim()) {
-        t.label = newLabel.trim();
+    const tool = getTools().find(x => x.id === toolId);
+    if (tool && newLabel.trim()) {
+        tool.label = newLabel.trim();
         saveSettings();
-        $(`.storyforge-tool-btn[data-tool="${toolId}"] .storyforge-tool-label`).text(t.label);
+        $(`.storyforge-tool-btn[data-tool="${toolId}"] .storyforge-tool-label`).text(tool.label);
         updateBadge();
     }
 }
@@ -328,7 +410,7 @@ function exportQuickInserts() {
     a.download = 'storyforge_quick_inserts.json';
     a.click();
     URL.revokeObjectURL(url);
-    toastr.success('Quick Inserts exported', 'StoryForge');
+    toastr.success(t('qi.exported'), t('app'));
 }
 
 // Strictly validate one imported Quick Insert entry. Returns a sanitized copy
@@ -372,7 +454,7 @@ function importQuickInserts() {
         // Size guard: refuse anything > 1 MiB to avoid blocking the UI on huge
         // / malicious files.
         if (file.size > 1024 * 1024) {
-            toastr.error('File too large (>1 MiB)', 'StoryForge');
+            toastr.error(t('qi.importTooLarge'), t('app'));
             return;
         }
         const reader = new FileReader();
@@ -381,7 +463,7 @@ function importQuickInserts() {
                 const parsed = JSON.parse(ev.target.result);
                 if (!parsed || typeof parsed !== 'object'
                     || !Array.isArray(parsed.storyforge_quick_inserts)) {
-                    toastr.error('Invalid file format', 'StoryForge');
+                    toastr.error(t('qi.importInvalid'), t('app'));
                     return;
                 }
                 const sanitized = parsed.storyforge_quick_inserts
@@ -389,7 +471,7 @@ function importQuickInserts() {
                     .filter(Boolean)
                     .slice(0, 200); // cap count
                 if (sanitized.length === 0) {
-                    toastr.error('No valid Quick Inserts in file', 'StoryForge');
+                    toastr.error(t('qi.importEmpty'), t('app'));
                     return;
                 }
                 const s = getSettings();
@@ -397,13 +479,13 @@ function importQuickInserts() {
                 saveSettings();
                 renderQuickInsertBar();
                 renderQuickInsertSettings();
-                toastr.success(`Imported ${sanitized.length} Quick Inserts`, 'StoryForge');
+                toastr.success(t('qi.imported', { count: sanitized.length }), t('app'));
             } catch (err) {
-                toastr.error('Failed to parse file', 'StoryForge');
+                toastr.error(t('qi.importParseFail'), t('app'));
                 console.error(`[${MODULE_NAME}] Import error`, err);
             }
         };
-        reader.onerror = () => toastr.error('Failed to read file', 'StoryForge');
+        reader.onerror = () => toastr.error(t('qi.importReadFail'), t('app'));
         reader.readAsText(file);
     };
     input.click();
@@ -467,45 +549,45 @@ function openQuickInsertEditor(qi = null) {
 
         const html = `<div class="sf-qi-modal">
             <div class="sf-qi-form-group">
-                <label>Name:</label>
-                <input type="text" id="sf-qi-edit-name" value="${escapeHtml(name)}" maxlength="20" placeholder="e.g. **">
+                <label>${escapeHtml(t('qi.editor.name'))}</label>
+                <input type="text" id="sf-qi-edit-name" value="${escapeHtml(name)}" maxlength="20" placeholder="${escapeHtml(t('qi.editor.namePh'))}">
             </div>
             <div class="sf-qi-form-group">
-                <label>Description:</label>
-                <input type="text" id="sf-qi-edit-desc" value="${escapeHtml(desc)}" placeholder="e.g. Action">
+                <label>${escapeHtml(t('qi.editor.desc'))}</label>
+                <input type="text" id="sf-qi-edit-desc" value="${escapeHtml(desc)}" placeholder="${escapeHtml(t('qi.editor.descPh'))}">
             </div>
             <div class="sf-qi-form-group">
-                <label>Content:</label>
-                <input type="text" id="sf-qi-edit-content" value="${escapeHtml(content)}" placeholder="Text to insert">
+                <label>${escapeHtml(t('qi.editor.content'))}</label>
+                <input type="text" id="sf-qi-edit-content" value="${escapeHtml(content)}" placeholder="${escapeHtml(t('qi.editor.contentPh'))}">
             </div>
             <div class="sf-qi-form-group">
-                <label>Insert Position:</label>
+                <label>${escapeHtml(t('qi.editor.insertPosition'))}</label>
                 <select id="sf-qi-edit-insert-pos">
-                    <option value="prepend" ${insertPos === 'prepend' ? 'selected' : ''}>Line start</option>
-                    <option value="as_is" ${insertPos === 'as_is' ? 'selected' : ''}>At cursor</option>
-                    <option value="append" ${insertPos === 'append' ? 'selected' : ''}>Line end</option>
-                    <option value="newline" ${insertPos === 'newline' ? 'selected' : ''}>New line</option>
+                    <option value="prepend" ${insertPos === 'prepend' ? 'selected' : ''}>${escapeHtml(t('qi.editor.insertPos.prepend'))}</option>
+                    <option value="as_is" ${insertPos === 'as_is' ? 'selected' : ''}>${escapeHtml(t('qi.editor.insertPos.asIs'))}</option>
+                    <option value="append" ${insertPos === 'append' ? 'selected' : ''}>${escapeHtml(t('qi.editor.insertPos.append'))}</option>
+                    <option value="newline" ${insertPos === 'newline' ? 'selected' : ''}>${escapeHtml(t('qi.editor.insertPos.newline'))}</option>
                 </select>
             </div>
             <div class="sf-qi-form-group">
-                <label>Cursor After:</label>
+                <label>${escapeHtml(t('qi.editor.cursorAfter'))}</label>
                 <select id="sf-qi-edit-cursor-type">
-                    <option value="begin" ${cursorType === 'begin' ? 'selected' : ''}>Content start</option>
-                    <option value="middle" ${cursorType === 'middle' ? 'selected' : ''}>Content middle</option>
-                    <option value="end" ${cursorType === 'end' ? 'selected' : ''}>Content end</option>
-                    <option value="custom" ${cursorType === 'custom' ? 'selected' : ''}>Custom</option>
+                    <option value="begin" ${cursorType === 'begin' ? 'selected' : ''}>${escapeHtml(t('qi.editor.cursor.begin'))}</option>
+                    <option value="middle" ${cursorType === 'middle' ? 'selected' : ''}>${escapeHtml(t('qi.editor.cursor.middle'))}</option>
+                    <option value="end" ${cursorType === 'end' ? 'selected' : ''}>${escapeHtml(t('qi.editor.cursor.end'))}</option>
+                    <option value="custom" ${cursorType === 'custom' ? 'selected' : ''}>${escapeHtml(t('qi.editor.cursor.custom'))}</option>
                 </select>
                 <input type="number" id="sf-qi-edit-cursor-num" min="0" value="${cursorPos}"
                     style="width:60px;${cursorType !== 'custom' ? 'display:none' : ''}">
             </div>
             <div class="sf-qi-modal-buttons">
-                <button id="sf-qi-modal-cancel" class="menu_button">Cancel</button>
-                <button id="sf-qi-modal-save" class="menu_button sf-qi-save-btn">Save</button>
+                <button id="sf-qi-modal-cancel" class="menu_button">${escapeHtml(t('common.cancel'))}</button>
+                <button id="sf-qi-modal-save" class="menu_button sf-qi-save-btn">${escapeHtml(t('common.save'))}</button>
             </div>
         </div>`;
 
         const { Popup, POPUP_TYPE } = SillyTavern.getContext();
-        const popup = new Popup(html, POPUP_TYPE.TEXT, '', { okButton: 'Close', allowVerticalScrolling: true });
+        const popup = new Popup(html, POPUP_TYPE.TEXT, '', { okButton: t('common.close'), allowVerticalScrolling: true });
 
         let resolved = false;
 
@@ -516,7 +598,7 @@ function openQuickInsertEditor(qi = null) {
 
             $('#sf-qi-modal-save').on('click', () => {
                 const formName = $('#sf-qi-edit-name').val()?.trim();
-                if (!formName) { toastr.warning('Name is required', 'StoryForge'); return; }
+                if (!formName) { toastr.warning(t('qi.nameRequired'), t('app')); return; }
 
                 const formContent = $('#sf-qi-edit-content').val() || '';
                 const formCursorType = $('#sf-qi-edit-cursor-type').val();
@@ -604,25 +686,25 @@ function addQuickInsertSettingsPanel() {
         <div id="sf-qi-panel" class="sf-qi-panel">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b><i class="fa-solid fa-wand-magic-sparkles"></i> StoryForge - Quick Inserts</b>
+                    <b><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('qi.section.title'))}</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <div class="sf-qi-info">Quick text insertion buttons above the input field. Configure button name, content to insert, insert position and cursor placement.</div>
+                    <div class="sf-qi-info">${escapeHtml(t('qi.section.intro'))}</div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-qi-bar-visible" ${getSettings().qiBarVisible ? 'checked' : ''}>
-                        <label for="sf-qi-bar-visible">Show Quick Insert bar</label>
+                        <label for="sf-qi-bar-visible">${escapeHtml(t('qi.bar.visible'))}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-qi-sendbar-btn" ${getSettings().sendBarButton ? 'checked' : ''}>
-                        <label for="sf-qi-sendbar-btn">Show StoryForge button in send bar</label>
+                        <label for="sf-qi-sendbar-btn">${escapeHtml(t('qi.bar.sendBtn'))}</label>
                     </div>
                     <div id="sf-qi-settings-list" class="sf-qi-settings-list"></div>
                     <div class="sf-qi-actions">
-                        <button id="sf-qi-add-btn" class="menu_button"><i class="fa-solid fa-plus"></i> Add</button>
-                        <button id="sf-qi-export-btn" class="menu_button"><i class="fa-solid fa-download"></i> Export</button>
-                        <button id="sf-qi-import-btn" class="menu_button"><i class="fa-solid fa-upload"></i> Import</button>
-                        <button id="sf-qi-reset-btn" class="menu_button"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+                        <button id="sf-qi-add-btn" class="menu_button"><i class="fa-solid fa-plus"></i> ${escapeHtml(t('qi.actions.add'))}</button>
+                        <button id="sf-qi-export-btn" class="menu_button"><i class="fa-solid fa-download"></i> ${escapeHtml(t('qi.actions.export'))}</button>
+                        <button id="sf-qi-import-btn" class="menu_button"><i class="fa-solid fa-upload"></i> ${escapeHtml(t('qi.actions.import'))}</button>
+                        <button id="sf-qi-reset-btn" class="menu_button"><i class="fa-solid fa-arrow-rotate-left"></i> ${escapeHtml(t('qi.actions.reset'))}</button>
                     </div>
                 </div>
             </div>
@@ -638,7 +720,7 @@ function addQuickInsertSettingsPanel() {
             addQuickInsert(data.name, data.description, data.content, data.cursorPosition, data.insertPosition);
             renderQuickInsertSettings();
             renderQuickInsertBar();
-            toastr.success(`"${data.name}" added`, 'StoryForge');
+            toastr.success(t('qi.added', { name: data.name }), t('app'));
         }
     });
 
@@ -650,13 +732,13 @@ function addQuickInsertSettingsPanel() {
 
     // Reset
     $('#sf-qi-reset-btn').on('click', async () => {
-        const confirmed = await SillyTavern.getContext().Popup.show.confirm('Reset Quick Inserts', 'Reset all Quick Inserts to defaults?');
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('qi.reset.confirmTitle'), t('qi.reset.confirmBody'));
         if (confirmed) {
             getSettings().quickInserts = structuredClone(DEFAULT_QUICK_INSERTS);
             saveSettings();
             renderQuickInsertSettings();
             renderQuickInsertBar();
-            toastr.info('Quick Inserts reset to defaults', 'StoryForge');
+            toastr.info(t('qi.resetDefaults'), t('app'));
         }
     });
 
@@ -694,19 +776,19 @@ function addQuickInsertSettingsPanel() {
             updateQuickInsert(id, data);
             renderQuickInsertSettings();
             renderQuickInsertBar();
-            toastr.success(`"${data.name}" updated`, 'StoryForge');
+            toastr.success(t('qi.updated', { name: data.name }), t('app'));
         }
     });
 
     panel.on('click', '.sf-qi-del-btn', async function () {
         const id = $(this).data('qi-id');
         const item = getQuickInserts().find(x => x.id === id);
-        const confirmed = await SillyTavern.getContext().Popup.show.confirm('Delete', `Delete "${item?.name || id}"?`);
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('qi.delete.confirmTitle'), t('qi.delete.confirmBody', { name: item?.name || id }));
         if (confirmed) {
             deleteQuickInsert(id);
             renderQuickInsertSettings();
             renderQuickInsertBar();
-            toastr.info('Deleted', 'StoryForge');
+            toastr.info(t('common.deleted'), t('app'));
         }
     });
 
@@ -720,25 +802,26 @@ function updateBadge() {
     if (activeInjections.size === 0) return;
     const tools = getTools();
     const tags = [...activeInjections.keys()].map(id => {
-        const t = tools.find(x => x.id === id);
-        if (!t) return '';
-        return `<span class="storyforge-active-tag"><i class="${escapeHtml(sanitizeIcon(t.icon))}" style="font-size:11px"></i> ${escapeHtml(t.label)} <span class="storyforge-tag-remove fa-solid fa-xmark" data-tool="${escapeHtml(id)}"></span></span>`;
+        const tool = tools.find(x => x.id === id);
+        if (!tool) return '';
+        return `<span class="storyforge-active-tag"><i class="${escapeHtml(sanitizeIcon(tool.icon))}" style="font-size:11px"></i> ${escapeHtml(tool.label)} <span class="storyforge-tag-remove fa-solid fa-xmark" data-tool="${escapeHtml(id)}"></span></span>`;
     }).join('');
     const badge = $(`<div id="storyforge-active-badge" class="storyforge-active-badge">
         <div class="storyforge-active-badge-header">
-            <span><i class="fa-solid fa-bolt" style="font-size:10px"></i> Active</span>
-            <span class="storyforge-active-badge-clear" id="storyforge_clearall">Clear All</span>
+            <span><i class="fa-solid fa-bolt" style="font-size:10px"></i> ${escapeHtml(t('tool.popup.activeLabel'))}</span>
+            <span class="storyforge-active-badge-clear" id="storyforge_clearall">${escapeHtml(t('tool.popup.clearAll'))}</span>
         </div>${tags}</div>`);
     $('body').append(badge);
     badge.on('click', '#storyforge_clearall', () => {
         clearAllTools();
-        toastr.info('Cleared', 'StoryForge');
+        toastr.info(t('common.cleared'), t('app'));
     });
     badge.on('click', '.storyforge-tag-remove', function () {
         const tid = $(this).data('tool');
         clearTool(tid);
         const all2 = getTools();
-        toastr.info(`${all2.find(x => x.id === tid)?.label || 'Tool'} cleared`, 'StoryForge');
+        const name = all2.find(x => x.id === tid)?.label || t('common.tool');
+        toastr.info(t('tool.cleared', { name }), t('app'));
     });
 }
 
@@ -750,84 +833,84 @@ function buildPopupHtml() {
     const settings = getSettings();
     const tools = getTools();
 
-    const toolButtons = tools.map(t => {
-        const isActive = activeInjections.has(t.id) ? ' storyforge-active' : '';
-        const id = escapeHtml(t.id);
+    const toolButtons = tools.map(tool => {
+        const isActive = activeInjections.has(tool.id) ? ' storyforge-active' : '';
+        const id = escapeHtml(tool.id);
         return `<div class="storyforge-tool-btn${isActive}" data-tool="${id}">
-            <span class="storyforge-tool-icon"><i class="${escapeHtml(sanitizeIcon(t.icon))}"></i></span>
-            <span class="storyforge-tool-label">${escapeHtml(t.label)}</span>
-            <span class="storyforge-tool-delete fa-solid fa-xmark" data-deletetool="${id}" title="Delete"></span>
+            <span class="storyforge-tool-icon"><i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i></span>
+            <span class="storyforge-tool-label">${escapeHtml(tool.label)}</span>
+            <span class="storyforge-tool-delete fa-solid fa-xmark" data-deletetool="${id}" title="${escapeHtml(t('common.delete'))}"></span>
         </div>`;
     }).join('');
 
-    const addBtn = `<div class="storyforge-add-btn" id="sf-add-tool-btn"><i class="fa-solid fa-plus"></i> New tool</div>`;
+    const addBtn = `<div class="storyforge-add-btn" id="sf-add-tool-btn"><i class="fa-solid fa-plus"></i> ${escapeHtml(t('tool.popup.newTool'))}</div>`;
 
     const newToolForm = `<div class="storyforge-new-tool-form" id="sf-new-tool-form" style="display:none">
-        <span class="sf-form-label">New custom tool</span>
-        <input type="text" id="sf-new-name" placeholder="Tool name, e.g. Flashback" maxlength="40">
-        <textarea id="sf-new-prompt" placeholder="Injection prompt for the model..."></textarea>
+        <span class="sf-form-label">${escapeHtml(t('tool.popup.newToolFormTitle'))}</span>
+        <input type="text" id="sf-new-name" placeholder="${escapeHtml(t('tool.popup.namePh'))}" maxlength="40">
+        <textarea id="sf-new-prompt" placeholder="${escapeHtml(t('tool.popup.promptPh'))}"></textarea>
         <div class="sf-form-row">
-            <button id="sf-new-cancel">Cancel</button>
-            <button id="sf-new-save" class="sf-save-btn"><i class="fa-solid fa-check"></i> Save</button>
+            <button id="sf-new-cancel">${escapeHtml(t('common.cancel'))}</button>
+            <button id="sf-new-save" class="sf-save-btn"><i class="fa-solid fa-check"></i> ${escapeHtml(t('common.save'))}</button>
         </div>
     </div>`;
 
-    const promptEditors = tools.map(t => {
-        const id = escapeHtml(t.id);
+    const promptEditors = tools.map(tool => {
+        const id = escapeHtml(tool.id);
         return `<div class="storyforge-prompt-item">
             <div class="sf-prompt-label" data-tool="${id}">
-                <i class="${escapeHtml(sanitizeIcon(t.icon))}"></i>
-                <span class="sf-label-text">${escapeHtml(t.label)}</span>
+                <i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i>
+                <span class="sf-label-text">${escapeHtml(tool.label)}</span>
                 <i class="fa-solid fa-pen" style="font-size:9px"></i>
-                <span class="sf-rename-hint">click to rename</span>
+                <span class="sf-rename-hint">${escapeHtml(t('tool.popup.renameHint'))}</span>
             </div>
-            <textarea class="sf-prompt-edit" data-tool="${id}" placeholder="${escapeHtml((t.prompt || '').substring(0, 100))}...">${escapeHtml(t.prompt || '')}</textarea>
+            <textarea class="sf-prompt-edit" data-tool="${id}" placeholder="${escapeHtml((tool.prompt || '').substring(0, 100))}...">${escapeHtml(tool.prompt || '')}</textarea>
         </div>`;
     }).join('');
 
     return `<div class="storyforge-popup">
-        <h3><i class="fa-solid fa-wand-magic-sparkles"></i> Tools</h3>
+        <h3><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('tool.popup.title'))}</h3>
         <div class="storyforge-grid">${toolButtons}${addBtn}</div>
         ${newToolForm}
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-prompts">
-                <h3><i class="fa-solid fa-pen-to-square"></i> Custom Prompts</h3>
+                <h3><i class="fa-solid fa-pen-to-square"></i> ${escapeHtml(t('tool.popup.customPrompts'))}</h3>
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-prompts">${promptEditors}</div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-settings">
-                <h3><i class="fa-solid fa-gear"></i> Settings</h3>
+                <h3><i class="fa-solid fa-gear"></i> ${escapeHtml(t('tool.popup.settings'))}</h3>
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-settings">
                 <div class="storyforge-settings-row">
                     <input type="checkbox" id="sf-pop-enabled" ${settings.enabled ? 'checked' : ''}>
-                    <label for="sf-pop-enabled">Enabled</label>
+                    <label for="sf-pop-enabled">${escapeHtml(t('tool.popup.enabled'))}</label>
                 </div>
                 <div class="storyforge-settings-row">
-                    <label for="sf-pop-depth">Injection Depth</label>
+                    <label for="sf-pop-depth">${escapeHtml(t('tool.popup.depth'))}</label>
                     <input type="number" id="sf-pop-depth" min="0" max="10" value="${settings.depth}">
                 </div>
                 <div class="storyforge-settings-row">
                     <input type="checkbox" id="sf-pop-autoclear" ${settings.autoClear ? 'checked' : ''}>
-                    <label for="sf-pop-autoclear">Auto-clear after generation (one-shot)</label>
+                    <label for="sf-pop-autoclear">${escapeHtml(t('tool.popup.autoClear'))}</label>
                 </div>
                 <div class="storyforge-settings-row" style="margin-top:8px">
-                    <button class="sf-reset-btn" id="sf-reset-defaults"><i class="fa-solid fa-arrow-rotate-left"></i> Reset to defaults</button>
+                    <button class="sf-reset-btn" id="sf-reset-defaults"><i class="fa-solid fa-arrow-rotate-left"></i> ${escapeHtml(t('tool.popup.resetBtn'))}</button>
                 </div>
             </div>
         </div>
         <div class="storyforge-footer">
-            <button id="sf-pop-clearall"><i class="fa-solid fa-broom"></i> Clear All</button>
+            <button id="sf-pop-clearall"><i class="fa-solid fa-broom"></i> ${escapeHtml(t('tool.popup.clearAll'))}</button>
         </div>
     </div>`;
 }
 
 async function openStoryForgePopup() {
     const { Popup, POPUP_TYPE } = SillyTavern.getContext();
-    const popup = new Popup(buildPopupHtml(), POPUP_TYPE.TEXT, '', { large: false, wide: false, okButton: 'Close', allowVerticalScrolling: true });
+    const popup = new Popup(buildPopupHtml(), POPUP_TYPE.TEXT, '', { large: false, wide: false, okButton: t('common.close'), allowVerticalScrolling: true });
     currentPopup = popup;
 
     requestAnimationFrame(() => {
@@ -848,12 +931,15 @@ async function openStoryForgePopup() {
             e.stopPropagation();
             const tid = $(this).data('deletetool');
             const all = getTools();
-            const t = all.find(x => x.id === tid);
-            const confirmed = await SillyTavern.getContext().Popup.show.confirm('Delete Tool', `Delete "${t?.label || tid}"?`);
+            const tool = all.find(x => x.id === tid);
+            const confirmed = await SillyTavern.getContext().Popup.show.confirm(
+                t('tool.confirmDeleteTitle'),
+                t('tool.confirmDelete', { name: tool?.label || tid }),
+            );
             if (confirmed) {
                 deleteTool(tid);
                 refreshPopupContent();
-                toastr.info('Tool deleted', 'StoryForge');
+                toastr.info(t('tool.deleted'), t('app'));
             }
         });
 
@@ -870,10 +956,10 @@ async function openStoryForgePopup() {
         $('#sf-new-save').on('click', () => {
             const name = $('#sf-new-name').val().trim();
             const prompt = $('#sf-new-prompt').val().trim();
-            if (!name) { toastr.warning('Enter a name', 'StoryForge'); return; }
-            if (!prompt) { toastr.warning('Enter a prompt', 'StoryForge'); return; }
+            if (!name) { toastr.warning(t('tool.enterName'), t('app')); return; }
+            if (!prompt) { toastr.warning(t('tool.enterPrompt'), t('app')); return; }
             addTool(name, prompt);
-            toastr.success(`${name} created`, 'StoryForge');
+            toastr.success(t('tool.created', { name }), t('app'));
             refreshPopupContent();
         });
 
@@ -913,14 +999,14 @@ async function openStoryForgePopup() {
         $('#sf-pop-clearall').on('click', () => {
             clearAllTools();
             $('.storyforge-tool-btn').removeClass('storyforge-active');
-            toastr.info('All injections cleared', 'StoryForge');
+            toastr.info(t('tool.allCleared'), t('app'));
         });
         $('#sf-reset-defaults').on('click', async () => {
-            const confirmed = await SillyTavern.getContext().Popup.show.confirm('Reset', 'Reset all tools to defaults? Custom tools will be removed.');
+            const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('tool.reset.confirmTitle'), t('tool.reset.confirmBodyCustom'));
             if (confirmed) {
                 resetToDefaults();
                 refreshPopupContent();
-                toastr.info('Reset to defaults', 'StoryForge');
+                toastr.info(t('tool.resetDefaults'), t('app'));
             }
         });
     });
@@ -953,10 +1039,10 @@ function refreshPopupContent() {
     $('#sf-new-save').on('click', () => {
         const name = $('#sf-new-name').val().trim();
         const prompt = $('#sf-new-prompt').val().trim();
-        if (!name) { toastr.warning('Enter a name', 'StoryForge'); return; }
-        if (!prompt) { toastr.warning('Enter a prompt', 'StoryForge'); return; }
+        if (!name) { toastr.warning(t('tool.enterName'), t('app')); return; }
+        if (!prompt) { toastr.warning(t('tool.enterPrompt'), t('app')); return; }
         addTool(name, prompt);
-        toastr.success(`${name} created`, 'StoryForge');
+        toastr.success(t('tool.created', { name }), t('app'));
         refreshPopupContent();
     });
 
@@ -967,11 +1053,11 @@ function refreshPopupContent() {
     $('#sf-pop-clearall').on('click', () => {
         clearAllTools();
         $('.storyforge-tool-btn').removeClass('storyforge-active');
-        toastr.info('All injections cleared', 'StoryForge');
+        toastr.info(t('tool.allCleared'), t('app'));
     });
     $('#sf-reset-defaults').on('click', async () => {
-        const confirmed = await SillyTavern.getContext().Popup.show.confirm('Reset', 'Reset all tools to defaults?');
-        if (confirmed) { resetToDefaults(); refreshPopupContent(); toastr.info('Reset to defaults', 'StoryForge'); }
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('tool.reset.confirmTitle'), t('tool.reset.confirmBody'));
+        if (confirmed) { resetToDefaults(); refreshPopupContent(); toastr.info(t('tool.resetDefaults'), t('app')); }
     });
 }
 
@@ -994,7 +1080,7 @@ function updateSendBarButton() {
     $('#sf-sendbar-btn').remove();
     if (!getSettings().sendBarButton) return;
 
-    const btn = $(`<div id="sf-sendbar-btn" class="sf-sendbar-btn interactable" title="StoryForge">
+    const btn = $(`<div id="sf-sendbar-btn" class="sf-sendbar-btn interactable" title="${escapeHtml(t('app'))}">
         <span class="fa-solid fa-fw storyforge-icon"></span>
     </div>`);
     btn.on('click', (e) => { e.preventDefault(); openStoryForgePopup(); });
@@ -1026,7 +1112,7 @@ function registerSlashCommands() {
     try {
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'sf-clear',
-            callback: () => { clearAllTools(); return 'Cleared'; },
+            callback: () => { clearAllTools(); return t('common.cleared'); },
             helpString: '<div>Clear all StoryForge injections.</div>',
         }));
     } catch (e) { /* already registered */ }
@@ -1082,46 +1168,52 @@ function ccGetSettings() {
     return s;
 }
 
-// Build the prompt for USER-side options (default behavior).
+// Default prompt templates. Exposed as constants so the settings panel can
+// show them in placeholders / a "Reset" affordance. Use {{count}} as the
+// substitution token for the requested number of choices; {{user}} and
+// {{char}} are native SillyTavern macros that ST substitutes at send time.
+const CC_DEFAULT_USER_PROMPT =
+    `[StoryForge: Choice Cards] Based on the current scene and the most recent reply, suggest {{count}} distinct, in-character actions that {{user}} could take next. ` +
+    `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
+    '```json\n' +
+    `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what {{user}} does, how they sound, and the likely immediate consequence."}]}\n` +
+    '```\n' +
+    `Rules: {{count}} entries, written from {{user}}'s perspective, no duplicates, no meta-commentary, no quotes around the JSON.`;
+
+const CC_DEFAULT_CHAR_PROMPT =
+    `[StoryForge: Choice Cards — Character] Based on the current scene, suggest {{count}} distinct, in-character actions that {{char}} (not {{user}}) could plausibly take next. ` +
+    `Focus on actions/decisions/reactions that {{char}} would initiate from their own personality and motives. ` +
+    `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
+    '```json\n' +
+    `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what {{char}} does and the immediate beat that follows."}]}\n` +
+    '```\n' +
+    `Rules: {{count}} entries, written from {{char}}'s perspective, no duplicates, no meta-commentary, no quotes around the JSON.`;
+
+function ccSubstCount(template, count) {
+    return String(template).replace(/\{\{count\}\}/g, String(count));
+}
+
 function ccBuildPromptTemplate(count) {
     const s = ccGetSettings();
-    if (s.ccCustomPrompt && s.ccCustomPrompt.trim()) {
-        return s.ccCustomPrompt.replace(/\{\{count\}\}/g, String(count));
-    }
-    return (
-        `[StoryForge: Choice Cards] Based on the current scene and the most recent reply, suggest ${count} distinct, in-character actions the user could take next. ` +
-        `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
-        '```json\n' +
-        `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what the user does, how they sound, and the likely immediate consequence."}]}\n` +
-        '```\n' +
-        `Rules: ${count} entries, written from the user's perspective in second person, no duplicates, no meta-commentary, no quotes around the JSON.`
-    );
+    const tpl = (s.ccCustomPrompt && s.ccCustomPrompt.trim()) || CC_DEFAULT_USER_PROMPT;
+    return ccSubstCount(tpl, count);
 }
 
-// Build the prompt for CHARACTER-side options.
-// The model proposes what the AI character could plausibly do next, given the
-// current scene. These are NOT what the user does — they're what the character
-// might initiate. The user clicks one to instruct the main LLM to actually
-// roleplay that action.
 function ccBuildCharPromptTemplate(count) {
-    return (
-        `[StoryForge: Choice Cards — Character] Based on the current scene, suggest ${count} distinct, in-character actions the AI CHARACTER (not the user) could plausibly take next. ` +
-        `Focus on actions/decisions/reactions that the character would initiate from their own personality and motives. ` +
-        `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
-        '```json\n' +
-        `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what the character does, said in third person, and the immediate beat that follows."}]}\n` +
-        '```\n' +
-        `Rules: ${count} entries, written from the character's perspective in third person, no duplicates, no meta-commentary, no quotes around the JSON.`
-    );
+    const s = ccGetSettings();
+    const tpl = (s.ccCustomCharPrompt && s.ccCustomCharPrompt.trim()) || CC_DEFAULT_CHAR_PROMPT;
+    return ccSubstCount(tpl, count);
 }
 
-// Build the prompt for BOTH sections in a single request.
-// We ask the model for an object with two keys: user_choices and character_choices.
+// Build the prompt for BOTH sections in a single request. We keep this as
+// a single combined template rather than two separate ones; advanced users
+// who want custom dual prompts can switch off both-at-once and use the
+// individual templates instead.
 function ccBuildBothPromptTemplate(userCount, charCount) {
     return (
         `[StoryForge: Choice Cards — Duo] Based on the current scene and most recent reply, suggest TWO sets of next actions:\n` +
-        ` • ${userCount} actions the USER could take next (second person, user POV)\n` +
-        ` • ${charCount} actions the AI CHARACTER could plausibly take next (third person, character POV)\n` +
+        ` • ${userCount} actions that {{user}} could take next (from {{user}}'s perspective)\n` +
+        ` • ${charCount} actions that {{char}} could plausibly take next (from {{char}}'s perspective)\n` +
         `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
         '```json\n' +
         `{"user_choices":[{"name":"Short label","description":"One or two sentences."}],"character_choices":[{"name":"Short label","description":"One or two sentences."}]}\n` +
@@ -1610,7 +1702,7 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
             <div class="sf-cc-section sf-cc-section-user">
                 <div class="sf-cc-section-label">
                     <i class="fa-solid fa-user"></i>
-                    <span>What you do</span>
+                    <span>${escapeHtml(t('cc.section.user'))}</span>
                 </div>
                 <div class="sf-cc-grid">${ccBuildCardsHtml(userChoices, 'user', s.ccReveal)}</div>
             </div>`;
@@ -1620,7 +1712,7 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
             <div class="sf-cc-charbar">
                 <button class="sf-cc-gen-char menu_button" type="button">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    <span>Generate character options</span>
+                    <span>${escapeHtml(t('cc.genCharBtn'))}</span>
                 </button>
             </div>`;
     }
@@ -1629,7 +1721,7 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
             <div class="sf-cc-section sf-cc-section-char">
                 <div class="sf-cc-section-label">
                     <i class="fa-solid fa-mask"></i>
-                    <span>What the character could do</span>
+                    <span>${escapeHtml(t('cc.section.char'))}</span>
                 </div>
                 <div class="sf-cc-grid">${ccBuildCardsHtml(charChoices, 'char', s.ccReveal)}</div>
             </div>`;
@@ -1639,7 +1731,7 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
     const totalCount = userChoices.length + charChoices.length;
     const durationStr = Number.isFinite(elapsedMs) ? ccFormatDuration(elapsedMs) : '';
     const durationBadge = durationStr
-        ? `<span class="sf-cc-duration" title="Generation time">
+        ? `<span class="sf-cc-duration" title="${escapeHtml(t('cc.header.durationTitle'))}">
                <i class="fa-solid fa-stopwatch"></i> ${escapeHtml(durationStr)}
            </span>`
         : '';
@@ -1650,14 +1742,14 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
             <div class="sf-cc-header" role="button" tabindex="0" aria-expanded="${s.ccCollapsed ? 'false' : 'true'}">
                 <i class="fa-solid fa-chevron-right sf-cc-chevron"></i>
                 <i class="fa-solid fa-comments sf-cc-header-icon"></i>
-                <span class="sf-cc-header-label">Choose your action</span>
+                <span class="sf-cc-header-label">${escapeHtml(t('cc.header.chooseAction'))}</span>
                 <span class="sf-cc-count-badge">${totalCount}</span>
                 ${durationBadge}
                 <span class="sf-cc-spacer"></span>
-                <button class="sf-cc-regen menu_button" title="Regenerate choices" tabindex="-1">
+                <button class="sf-cc-regen menu_button" title="${escapeHtml(t('cc.header.regen'))}" tabindex="-1">
                     <i class="fa-solid fa-arrows-rotate"></i>
                 </button>
-                <button class="sf-cc-close menu_button" title="Dismiss" tabindex="-1">
+                <button class="sf-cc-close menu_button" title="${escapeHtml(t('cc.header.dismiss'))}" tabindex="-1">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -1698,7 +1790,7 @@ function ccAppendCharSection(charChoices) {
         <div class="sf-cc-section sf-cc-section-char">
             <div class="sf-cc-section-label">
                 <i class="fa-solid fa-mask"></i>
-                <span>What the character could do</span>
+                <span>${escapeHtml(t('cc.section.char'))}</span>
             </div>
             <div class="sf-cc-grid">${ccBuildCardsHtml(charChoices, 'char', s.ccReveal)}</div>
         </div>`;
@@ -1752,7 +1844,7 @@ function ccApplyCharChoice(choice) {
     // of the surrounding instruction and try to prompt-inject the main
     // model. The card content itself is LLM-generated, so even though it
     // came from "us", we treat it as untrusted text.
-    const sanitize = (s) => String(s || '')
+    const sanitize = (txt) => String(txt || '')
         .replace(/[\u0000-\u001f\u007f]/g, ' ')
         .replace(/```+/g, '')
         .replace(/"/g, "'")
@@ -1761,7 +1853,7 @@ function ccApplyCharChoice(choice) {
     const desc = sanitize(choice.description).slice(0, CC_MAX_DESC);
     const text = [name, desc].filter(Boolean).join(' — ');
     if (!text) {
-        toastr.warning('Empty character action', 'StoryForge');
+        toastr.warning(t('cc.charAction.empty'), t('app'));
         return;
     }
     const prompt =
@@ -1818,13 +1910,10 @@ function ccApplyCharChoice(choice) {
         || sendBtn.classList.contains('disabled')
         || sendBtn.getAttribute('aria-disabled') === 'true');
     if (!sendBtn || isDisabled) {
-        toastr.warning(
-            'Character action queued, but Send is unavailable (generation already in progress?). Send manually when ready.',
-            'StoryForge', { timeOut: 4000 },
-        );
+        toastr.warning(t('cc.charAction.sendBusy'), t('app'), { timeOut: 4000 });
         return;
     }
-    toastr.info(`Character will: ${choice.name}`, 'StoryForge', { timeOut: 2500 });
+    toastr.info(t('cc.charAction.willDo', { name: choice.name }), t('app'), { timeOut: 2500 });
     sendBtn.click();
 }
 
@@ -1845,7 +1934,7 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
     if (ccGenerationInProgress) return;
     const s = ccGetSettings();
     if (!s.ccEnabled) {
-        if (!silent) toastr.warning('Choice Cards are disabled', 'StoryForge');
+        if (!silent) toastr.warning(t('cc.disabled'), t('app'));
         return;
     }
     ccGenerationInProgress = true;
@@ -1863,10 +1952,10 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
             <div class="sf-cc-wrap sf-cc-loading sf-cc-style-${escapeHtml(s.ccStyle)}">
                 <div class="sf-cc-header">
                     <i class="fa-solid fa-spinner fa-spin sf-cc-header-icon"></i>
-                    <span class="sf-cc-header-label">Generating choices</span>
+                    <span class="sf-cc-header-label">${escapeHtml(t('cc.header.generating'))}</span>
                     <span class="sf-cc-timer" aria-live="polite">0.0s</span>
                     <span class="sf-cc-spacer"></span>
-                    <button class="sf-cc-close menu_button" title="Cancel display" tabindex="-1">
+                    <button class="sf-cc-close menu_button" title="${escapeHtml(t('cc.header.cancel'))}" tabindex="-1">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
                 </div>
@@ -1914,7 +2003,7 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         if ($placeholder) $placeholder.remove();
 
         if (!choices) {
-            if (!silent) toastr.warning('Could not generate choices', 'StoryForge', { timeOut: 2500 });
+            if (!silent) toastr.warning(t('cc.couldNotGenerate'), t('app'), { timeOut: 2500 });
             return;
         }
         // If user-array, clamp to ccCount; if duo, already clamped above.
@@ -1924,7 +2013,7 @@ async function ccGenerateAndRender({ silent = false, messageId = null } = {}) {
         console.error(`[${MODULE_NAME}] Choice Cards error`, err);
         if (tickHandle) clearInterval(tickHandle);
         if ($placeholder) $placeholder.remove();
-        if (!silent) toastr.error('Choice generation failed (see console)', 'StoryForge');
+        if (!silent) toastr.error(t('cc.genFailed'), t('app'));
     } finally {
         ccGenerationInProgress = false;
     }
@@ -1948,14 +2037,14 @@ async function ccGenerateCharIntoExistingWrap({ silent = false } = {}) {
     if ($existingBtn.length) {
         restoreBtnHtml = $existingBtn.html();
         $existingBtn.prop('disabled', true)
-            .html('<i class="fa-solid fa-spinner fa-spin"></i><span>Generating character options…</span>');
+            .html(`<i class="fa-solid fa-spinner fa-spin"></i><span>${t('cc.genCharBtn.loading')}</span>`);
     } else {
         // No existing button (e.g. user-plus-auto mode). Add a transient one.
         $wrap.find('.sf-cc-body').append(`
             <div class="sf-cc-charbar sf-cc-charbar-loading">
                 <button class="menu_button" type="button" disabled>
                     <i class="fa-solid fa-spinner fa-spin"></i>
-                    <span>Generating character options…</span>
+                    <span>${t('cc.genCharBtn.loading')}</span>
                 </button>
             </div>
         `);
@@ -1967,7 +2056,7 @@ async function ccGenerateCharIntoExistingWrap({ silent = false } = {}) {
         $wrap.find('.sf-cc-charbar-loading').remove();
 
         if (!choices || choices.length === 0) {
-            if (!silent) toastr.warning('No character options generated', 'StoryForge', { timeOut: 2500 });
+            if (!silent) toastr.warning(t('cc.noCharOptions'), t('app'), { timeOut: 2500 });
             if ($existingBtn.length && restoreBtnHtml !== null) {
                 $existingBtn.prop('disabled', false).html(restoreBtnHtml);
             }
@@ -1984,7 +2073,7 @@ async function ccGenerateCharIntoExistingWrap({ silent = false } = {}) {
         if ($existingBtn.length && restoreBtnHtml !== null) {
             $existingBtn.prop('disabled', false).html(restoreBtnHtml);
         }
-        if (!silent) toastr.error('Character options generation failed', 'StoryForge');
+        if (!silent) toastr.error(t('cc.charGenFailed'), t('app'));
     } finally {
         ccCharGenInFlight = false;
     }
@@ -2006,39 +2095,44 @@ function ccBindCardEvents() {
 
     $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
         e.preventDefault();
-        const $wrap = $(this).closest('.sf-cc-wrap');
-        const side = $(this).attr('data-cc-side') || 'user';
+        const $card = $(this);
+        const $wrap = $card.closest('.sf-cc-wrap');
+        const side = $card.attr('data-cc-side') || 'user';
         const list = side === 'char'
             ? ($wrap.data('cc-char') || [])
             : ($wrap.data('cc-user') || []);
-        const idx = parseInt($(this).attr('data-cc-idx'), 10);
+        const idx = parseInt($card.attr('data-cc-idx'), 10);
         if (!Array.isArray(list) || !Number.isInteger(idx)) return;
         const choice = list[idx];
         if (!choice) return;
 
+        // Mark visited so the user can see what's already been picked.
+        // Card remains clickable in case they want to pick it again.
+        $card.addClass('sf-cc-used');
+
         if (side === 'char') {
-            // Char click → OOC injection + autosend. The wrap will be cleared
-            // by the MESSAGE_SENT / GENERATION_STARTED hooks.
+            // Char click → OOC injection + autosend. The wrap stays put;
+            // it'll be cleared automatically when the next bot reply arrives
+            // (handled by CHARACTER_MESSAGE_RENDERED in ccBindStEvents).
             ccApplyCharChoice(choice);
-            $wrap.addClass('sf-cc-fading');
             return;
         }
 
-        // User card. In user-plus-auto mode we keep the wrap visible,
-        // suppress autosend, and immediately kick off character-option
-        // generation. Otherwise we apply normally and fade the wrap away.
+        // User card. In user-plus-auto mode we suppress autosend so the
+        // character section can spawn before the user actually sends.
         const s = ccGetSettings();
-        const isAuto = s.ccDuoMode === 'user-plus-auto'
-            && ($wrap.data('cc-char') || []).length === 0;
+        const $existingChar = $wrap.data('cc-char') || [];
+        const wantAutoChar = s.ccDuoMode === 'user-plus-auto'
+            && $existingChar.length === 0;
 
-        ccApplyUserChoice(choice, { suppressSend: isAuto });
+        ccApplyUserChoice(choice, { suppressSend: wantAutoChar });
 
-        if (isAuto) {
+        if (wantAutoChar) {
             ccGenerateCharIntoExistingWrap({ silent: true });
-        } else {
-            $wrap.addClass('sf-cc-fading');
-            setTimeout(() => $wrap.remove(), 250);
         }
+        // Otherwise: do nothing else. Wrap stays — user might want to
+        // tap several options or pick a char card afterwards. It gets
+        // cleared when a new bot reply arrives.
     });
 
     $(document).on('keydown.sf-cc', '.sf-cc-card', function (e) {
@@ -2107,16 +2201,17 @@ function ccBindStEvents() {
 
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onBotMessage);
 
-    // Drop cards when user sends a new message, swipes, or generation starts.
-    // The ccCharGenInFlight guard prevents wiping our wrap while we're
-    // adding the character section to it (the quiet prompt for char options
-    // can also emit GENERATION_STARTED depending on ST build).
+    // Drop cards on context switches and on user actions that invalidate
+    // the current choice set (swipe = different bot reply, delete = message
+    // gone, chat changed = entirely different context). We deliberately do
+    // NOT drop on MESSAGE_SENT or GENERATION_STARTED — the user may tap
+    // multiple cards before sending, and char-card clicks fire Send
+    // themselves. The next bot reply (CHARACTER_MESSAGE_RENDERED) wipes
+    // the stale wrap, see onBotMessage above.
     const dropCards = () => {
         if (ccCharGenInFlight) return;
         ccRemoveCards();
     };
-    eventSource.on(event_types.MESSAGE_SENT, dropCards);
-    eventSource.on(event_types.GENERATION_STARTED, dropCards);
     eventSource.on(event_types.MESSAGE_SWIPED, dropCards);
     eventSource.on(event_types.MESSAGE_DELETED, dropCards);
     eventSource.on(event_types.CHAT_CHANGED, dropCards);
@@ -2129,7 +2224,7 @@ function ccUpdateSendBarButton() {
     const s = ccGetSettings();
     if (!s.ccSendBarButton || !s.ccEnabled) return;
 
-    const btn = $(`<div id="sf-cc-sendbar-btn" class="sf-sendbar-btn interactable" title="Generate Choice Cards (StoryForge)">
+    const btn = $(`<div id="sf-cc-sendbar-btn" class="sf-sendbar-btn interactable" title="${escapeHtml(t('cc.header.chooseAction'))} (${escapeHtml(t('app'))})">
         <i class="fa-solid fa-comments"></i>
     </div>`);
     btn.on('click', (e) => {
@@ -2164,17 +2259,13 @@ function ccRenderModelDropdown(panel, currentValue) {
     $dd.empty();
 
     if (!ccFetchedModels.length) {
-        $dd.append(`<div class="sf-cc-model-dropdown-empty">
-            No models loaded. Press <b>Fetch</b> to load the list.
-        </div>`);
+        $dd.append(`<div class="sf-cc-model-dropdown-empty">${t('cc.model.empty')}</div>`);
         return;
     }
 
     const filtered = ccFilterModels(ccFetchedModels, currentValue || '');
     if (filtered.length === 0) {
-        $dd.append(`<div class="sf-cc-model-dropdown-empty">
-            No models match "${escapeHtml(currentValue || '')}".
-        </div>`);
+        $dd.append(`<div class="sf-cc-model-dropdown-empty">${t('cc.model.noMatch', { query: escapeHtml(currentValue || '') })}</div>`);
         return;
     }
 
@@ -2190,9 +2281,7 @@ function ccRenderModelDropdown(panel, currentValue) {
 
     let footer = '';
     if (filtered.length > visible.length) {
-        footer = `<div class="sf-cc-model-dropdown-empty">
-            Showing ${visible.length} of ${filtered.length}. Keep typing to narrow down.
-        </div>`;
+        footer = `<div class="sf-cc-model-dropdown-empty">${t('cc.model.showing', { visible: visible.length, total: filtered.length })}</div>`;
     }
     $dd.append(html + footer);
 }
@@ -2213,116 +2302,107 @@ function ccAddSettingsPanel() {
     const s = ccGetSettings();
 
     const styleOptions = [
-        ['vn-classic', 'VN Classic'],
-        ['minimal',    'Minimal'],
-        ['neon',       'Neon'],
-        ['parchment',  'Parchment'],
+        ['vn-classic', t('cc.style.vnClassic')],
+        ['minimal',    t('cc.style.minimal')],
+        ['neon',       t('cc.style.neon')],
+        ['parchment',  t('cc.style.parchment')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccStyle === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const modeOptions = [
-        ['request', 'Separate LLM request'],
-        ['parse',   'Parse JSON from reply'],
-        ['hybrid',  'Hybrid (parse → request)'],
+        ['request', t('cc.mode.request')],
+        ['parse',   t('cc.mode.parse')],
+        ['hybrid',  t('cc.mode.hybrid')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccMode === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const revealOptions = [
-        ['hover',   'Reveal on hover'],
-        ['always',  'Always visible'],
-        ['tooltip', 'Tooltip only'],
+        ['hover',   t('cc.reveal.hover')],
+        ['always',  t('cc.reveal.always')],
+        ['tooltip', t('cc.reveal.tooltip')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccReveal === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const panel = $(`
         <div id="sf-cc-panel" class="sf-qi-panel">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b><i class="fa-solid fa-comments"></i> StoryForge - Choice Cards</b>
+                    <b><i class="fa-solid fa-comments"></i> ${t('cc.section.title')}</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <div class="sf-qi-info">Generate visual-novel style action choices under the latest bot message.</div>
+                    <div class="sf-qi-info">${t('cc.section.intro')}</div>
 
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-enabled" ${s.ccEnabled ? 'checked' : ''}>
-                        <label for="sf-cc-enabled">Enable Choice Cards</label>
+                        <label for="sf-cc-enabled">${t('cc.enabled')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-auto" ${s.ccAuto ? 'checked' : ''}>
-                        <label for="sf-cc-auto">Auto-generate after every bot reply</label>
+                        <label for="sf-cc-auto">${t('cc.auto')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-sendbtn" ${s.ccSendBarButton ? 'checked' : ''}>
-                        <label for="sf-cc-sendbtn">Show button in send bar</label>
+                        <label for="sf-cc-sendbtn">${t('cc.sendBarBtn')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-collapsed" ${s.ccCollapsed ? 'checked' : ''}>
-                        <label for="sf-cc-collapsed">Collapsed by default (click header to expand)</label>
+                        <label for="sf-cc-collapsed">${t('cc.collapsed')}</label>
                     </div>
 
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-mode">Generation mode</label>
+                        <label for="sf-cc-mode">${t('cc.mode')}</label>
                         <select id="sf-cc-mode">${modeOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-style">Visual style</label>
+                        <label for="sf-cc-style">${t('cc.style')}</label>
                         <select id="sf-cc-style">${styleOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-reveal">Description display</label>
+                        <label for="sf-cc-reveal">${t('cc.reveal')}</label>
                         <select id="sf-cc-reveal">${revealOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-count">Number of choices (2-6)</label>
+                        <label for="sf-cc-count">${t('cc.count')}</label>
                         <input type="number" id="sf-cc-count" min="2" max="6" value="${s.ccCount}">
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-apisource">Generation API</label>
+                        <label for="sf-cc-apisource">${t('cc.apiSource')}</label>
                         <select id="sf-cc-apisource">
-                            <option value="default" ${s.ccApiSource === 'default' ? 'selected' : ''}>Current ST connection (default)</option>
-                            <option value="st-profile" ${s.ccApiSource === 'st-profile' ? 'selected' : ''}>SillyTavern Connection Profile</option>
-                            <option value="builtin" ${s.ccApiSource === 'builtin' ? 'selected' : ''}>Built-in profile (own endpoint)</option>
+                            <option value="default" ${s.ccApiSource === 'default' ? 'selected' : ''}>${t('cc.apiSource.default')}</option>
+                            <option value="st-profile" ${s.ccApiSource === 'st-profile' ? 'selected' : ''}>${t('cc.apiSource.stProfile')}</option>
+                            <option value="builtin" ${s.ccApiSource === 'builtin' ? 'selected' : ''}>${t('cc.apiSource.builtin')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row sf-cc-api-st-profile" style="${s.ccApiSource === 'st-profile' ? '' : 'display:none'}">
-                        <label for="sf-cc-profile">ST profile name</label>
-                        <input type="text" id="sf-cc-profile" value="${escapeHtml(s.ccProfile || '')}" placeholder="e.g. small-model">
+                        <label for="sf-cc-profile">${t('cc.stProfile')}</label>
+                        <input type="text" id="sf-cc-profile" value="${escapeHtml(s.ccProfile || '')}" placeholder="${escapeHtml(t('cc.stProfilePh'))}">
                     </div>
                     <div class="sf-cc-builtin-block" style="${s.ccApiSource === 'builtin' ? '' : 'display:none'}">
                         <div class="sf-cc-info-box">
                             <i class="fa-solid fa-circle-info"></i>
-                            <div>
-                                Use a cheap small model (e.g. <code>claude-3.5-haiku</code>, <code>gpt-4o-mini</code>, <code>llama-3.1-8b-instant</code>)
-                                so generating choices doesn't burn through your main-model budget.
-                                Endpoint must be OpenAI-compatible (<code>/chat/completions</code>).
-                                <br><br>
-                                <b>CORS note:</b> the request goes directly from your browser. Works with
-                                OpenRouter, OpenAI, Groq, DeepSeek, Mistral, Together, and local servers
-                                (ollama/lmstudio/koboldcpp). The native Anthropic API does <b>not</b> allow
-                                browser requests — use OpenRouter for Claude models.
-                            </div>
+                            <div>${t('cc.builtin.info')}</div>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apiurl">API base URL</label>
+                            <label for="sf-cc-apiurl">${t('cc.apiUrl')}</label>
                             <input type="text" id="sf-cc-apiurl" value="${escapeHtml(s.ccApiUrl || '')}"
                                 placeholder="https://openrouter.ai/api/v1">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apikey">API key</label>
+                            <label for="sf-cc-apikey">${t('cc.apiKey')}</label>
                             <div class="sf-cc-key-row">
-                                <input type="password" id="sf-cc-apikey" value="" placeholder="${''}" autocomplete="off">
-                                <button id="sf-cc-key-save" class="menu_button" title="Save key to ST secrets">
+                                <input type="password" id="sf-cc-apikey" value="" placeholder="" autocomplete="off">
+                                <button id="sf-cc-key-save" class="menu_button" title="${escapeHtml(t('cc.apiKey.saveTitle'))}">
                                     <i class="fa-solid fa-floppy-disk"></i>
                                 </button>
-                                <button id="sf-cc-key-show" class="menu_button" title="Toggle visibility">
+                                <button id="sf-cc-key-show" class="menu_button" title="${escapeHtml(t('cc.apiKey.toggleTitle'))}">
                                     <i class="fa-solid fa-eye"></i>
                                 </button>
-                                <button id="sf-cc-key-clear" class="menu_button" title="Delete saved key">
+                                <button id="sf-cc-key-clear" class="menu_button" title="${escapeHtml(t('cc.apiKey.clearTitle'))}">
                                     <i class="fa-solid fa-trash"></i>
                                 </button>
                             </div>
-                            <span class="sf-cc-key-status" id="sf-cc-key-status">Status: unknown</span>
+                            <span class="sf-cc-key-status" id="sf-cc-key-status">${t('cc.apiKey.statusUnknown')}</span>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apimodel">Model</label>
+                            <label for="sf-cc-apimodel">${t('cc.model')}</label>
                             <div class="sf-cc-model-row">
                                 <div class="sf-cc-model-picker" id="sf-cc-model-picker">
                                     <input type="text" id="sf-cc-apimodel"
@@ -2335,63 +2415,78 @@ function ccAddSettingsPanel() {
                                         <i class="fa-solid fa-chevron-down"></i>
                                     </button>
                                     <div class="sf-cc-model-dropdown" id="sf-cc-model-dropdown" hidden>
-                                        <div class="sf-cc-model-dropdown-empty">
-                                            No models loaded. Press <b>Fetch</b> to load the list.
-                                        </div>
+                                        <div class="sf-cc-model-dropdown-empty">${t('cc.model.empty')}</div>
                                     </div>
                                 </div>
-                                <button id="sf-cc-fetch-models" class="menu_button" title="Fetch model list from endpoint">
-                                    <i class="fa-solid fa-list"></i> Fetch
+                                <button id="sf-cc-fetch-models" class="menu_button" title="${escapeHtml(t('cc.model.fetchTitle'))}">
+                                    <i class="fa-solid fa-list"></i> ${t('cc.model.fetch')}
                                 </button>
                             </div>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-context">Chat history sent (msgs)</label>
+                            <label for="sf-cc-context">${t('cc.contextSize')}</label>
                             <input type="number" id="sf-cc-context" min="0" max="20" value="${s.ccContextSize}">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-temp">Temperature (0-2)</label>
+                            <label for="sf-cc-temp">${t('cc.temperature')}</label>
                             <input type="number" id="sf-cc-temp" min="0" max="2" step="0.1" value="${s.ccTemperature}">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-maxtok">Max tokens</label>
+                            <label for="sf-cc-maxtok">${t('cc.maxTokens')}</label>
                             <input type="number" id="sf-cc-maxtok" min="64" max="4096" value="${s.ccMaxTokens}">
                         </div>
                         <div class="sf-qi-actions">
-                            <button id="sf-cc-test-conn" class="menu_button"><i class="fa-solid fa-plug"></i> Test connection</button>
+                            <button id="sf-cc-test-conn" class="menu_button"><i class="fa-solid fa-plug"></i> ${t('cc.testConn')}</button>
                         </div>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-clickaction">User card click</label>
+                        <label for="sf-cc-clickaction">${t('cc.clickAction')}</label>
                         <select id="sf-cc-clickaction">
-                            <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>Insert into input</option>
-                            <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>Insert and send</option>
+                            <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>${t('cc.clickAction.insert')}</option>
+                            <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>${t('cc.clickAction.send')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-duomode">Character options</label>
+                        <label for="sf-cc-duomode">${t('cc.duoMode')}</label>
                         <select id="sf-cc-duomode">
-                            <option value="user-only"      ${s.ccDuoMode === 'user-only'      ? 'selected' : ''}>User actions only</option>
-                            <option value="user-plus-btn"  ${s.ccDuoMode === 'user-plus-btn'  ? 'selected' : ''}>User actions + "Generate for character" button</option>
-                            <option value="user-plus-auto" ${s.ccDuoMode === 'user-plus-auto' ? 'selected' : ''}>Auto-generate character options after user picks</option>
-                            <option value="both-at-once"   ${s.ccDuoMode === 'both-at-once'   ? 'selected' : ''}>Generate user + character at once (one request)</option>
+                            <option value="user-only"      ${s.ccDuoMode === 'user-only'      ? 'selected' : ''}>${t('cc.duoMode.userOnly')}</option>
+                            <option value="user-plus-btn"  ${s.ccDuoMode === 'user-plus-btn'  ? 'selected' : ''}>${t('cc.duoMode.userPlusBtn')}</option>
+                            <option value="user-plus-auto" ${s.ccDuoMode === 'user-plus-auto' ? 'selected' : ''}>${t('cc.duoMode.userPlusAuto')}</option>
+                            <option value="both-at-once"   ${s.ccDuoMode === 'both-at-once'   ? 'selected' : ''}>${t('cc.duoMode.bothAtOnce')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row sf-cc-charcount-row" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
-                        <label for="sf-cc-charcount">Character options count (2-6)</label>
+                        <label for="sf-cc-charcount">${t('cc.charCount')}</label>
                         <input type="number" id="sf-cc-charcount" min="2" max="6" value="${s.ccCharCount}">
                     </div>
-                    <div class="sf-qi-info sf-cc-charinfo" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
-                        Tapping a <b>character</b> card injects an OOC instruction and immediately fires the main model, so the character performs the chosen action in the next reply.
-                    </div>
+                    <div class="sf-qi-info sf-cc-charinfo" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">${t('cc.charInfo')}</div>
                     <div class="sf-cc-form-row sf-cc-form-row-block">
-                        <label for="sf-cc-custom">Custom prompt template (optional, use {{count}})</label>
-                        <textarea id="sf-cc-custom" rows="4" placeholder="Leave empty to use the default template">${escapeHtml(s.ccCustomPrompt || '')}</textarea>
+                        <div class="sf-cc-prompt-head">
+                            <label for="sf-cc-custom">${t('cc.userPrompt')}</label>
+                            <button id="sf-cc-custom-reset" class="menu_button sf-cc-prompt-reset" type="button" title="${escapeHtml(t('common.reset'))}">
+                                <i class="fa-solid fa-arrow-rotate-left"></i> ${t('common.reset')}
+                            </button>
+                        </div>
+                        <textarea id="sf-cc-custom" rows="8"
+                            placeholder="${escapeHtml(t('cc.promptPh'))}">${escapeHtml(s.ccCustomPrompt || '')}</textarea>
+                        <div class="sf-qi-info sf-cc-prompt-hint">${t('cc.promptHint')}</div>
+                    </div>
+                    <div class="sf-cc-form-row sf-cc-form-row-block sf-cc-charprompt-row"
+                         style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
+                        <div class="sf-cc-prompt-head">
+                            <label for="sf-cc-custom-char">${t('cc.charPrompt')}</label>
+                            <button id="sf-cc-custom-char-reset" class="menu_button sf-cc-prompt-reset" type="button" title="${escapeHtml(t('common.reset'))}">
+                                <i class="fa-solid fa-arrow-rotate-left"></i> ${t('common.reset')}
+                            </button>
+                        </div>
+                        <textarea id="sf-cc-custom-char" rows="8"
+                            placeholder="${escapeHtml(t('cc.promptPh'))}">${escapeHtml(s.ccCustomCharPrompt || '')}</textarea>
+                        <div class="sf-qi-info sf-cc-prompt-hint">${t('cc.charPromptHint')}</div>
                     </div>
 
                     <div class="sf-qi-actions">
-                        <button id="sf-cc-test" class="menu_button"><i class="fa-solid fa-flask"></i> Test generation</button>
-                        <button id="sf-cc-clear" class="menu_button"><i class="fa-solid fa-broom"></i> Clear visible cards</button>
+                        <button id="sf-cc-test" class="menu_button"><i class="fa-solid fa-flask"></i> ${t('cc.testGen')}</button>
+                        <button id="sf-cc-clear" class="menu_button"><i class="fa-solid fa-broom"></i> ${t('cc.clearVisible')}</button>
                     </div>
                 </div>
             </div>
@@ -2451,7 +2546,7 @@ function ccAddSettingsPanel() {
         ccGetSettings().ccDuoMode = v;
         saveSettings();
         const isUserOnly = v === 'user-only';
-        panel.find('.sf-cc-charcount-row, .sf-cc-charinfo').toggle(!isUserOnly);
+        panel.find('.sf-cc-charcount-row, .sf-cc-charinfo, .sf-cc-charprompt-row').toggle(!isUserOnly);
     });
     panel.on('input', '#sf-cc-charcount', function () {
         ccGetSettings().ccCharCount = parseInt($(this).val(), 10) || 3;
@@ -2460,6 +2555,19 @@ function ccAddSettingsPanel() {
     panel.on('input', '#sf-cc-custom', function () {
         ccGetSettings().ccCustomPrompt = $(this).val();
         saveSettings();
+    });
+    panel.on('input', '#sf-cc-custom-char', function () {
+        ccGetSettings().ccCustomCharPrompt = $(this).val();
+        saveSettings();
+    });
+    panel.on('click', '#sf-cc-custom-reset', function (e) {
+        e.preventDefault();
+        // Fill the textarea with the default so the user can see and edit it.
+        panel.find('#sf-cc-custom').val(CC_DEFAULT_USER_PROMPT).trigger('input');
+    });
+    panel.on('click', '#sf-cc-custom-char-reset', function (e) {
+        e.preventDefault();
+        panel.find('#sf-cc-custom-char').val(CC_DEFAULT_CHAR_PROMPT).trigger('input');
     });
     panel.on('click', '#sf-cc-test', () => ccGenerateAndRender({ silent: false }));
     panel.on('click', '#sf-cc-clear', () => ccRemoveCards());
@@ -2563,25 +2671,25 @@ function ccAddSettingsPanel() {
         const $input = panel.find('#sf-cc-apikey');
         const value = $input.val();
         if (!value || !value.trim()) {
-            toastr.warning('Enter an API key first', 'StoryForge');
+            toastr.warning(t('cc.apiKey.enterFirst'), t('app'));
             return;
         }
         const ok = await ccSaveApiKey(value);
         if (ok) {
             $input.val('');                       // clear field after save
-            toastr.success('API key saved to ST secrets', 'StoryForge');
+            toastr.success(t('cc.apiKey.saved'), t('app'));
             ccRefreshKeyStatus(panel);
         } else {
-            toastr.error('Failed to save API key', 'StoryForge');
+            toastr.error(t('cc.apiKey.saveFailed'), t('app'));
         }
     });
     panel.on('click', '#sf-cc-key-clear', async function () {
         const ok = await ccSaveApiKey('');
         if (ok) {
-            toastr.info('API key deleted', 'StoryForge');
+            toastr.info(t('cc.apiKey.deleted'), t('app'));
             ccRefreshKeyStatus(panel);
         } else {
-            toastr.error('Failed to delete key', 'StoryForge');
+            toastr.error(t('cc.apiKey.deleteFailed'), t('app'));
         }
     });
     panel.on('click', '#sf-cc-key-show', function () {
@@ -2597,18 +2705,18 @@ function ccAddSettingsPanel() {
     panel.on('click', '#sf-cc-fetch-models', async function () {
         const $btn = $(this);
         const original = $btn.html();
-        $btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Fetching');
+        $btn.html(`<i class="fa-solid fa-spinner fa-spin"></i> ${t('cc.model.fetching')}`);
         $btn.prop('disabled', true);
         try {
             const list = await ccFetchModels();
             ccFetchedModels = list;
             ccRenderModelDropdown(panel, panel.find('#sf-cc-apimodel').val());
             ccShowModelDropdown(panel);
-            toastr.success(`Loaded ${list.length} models. Tap the model field to browse.`,
-                'StoryForge', { timeOut: 4000 });
+            toastr.success(t('cc.model.loaded', { count: list.length }),
+                t('app'), { timeOut: 4000 });
         } catch (err) {
             console.error(`[${MODULE_NAME}] Fetch models failed`, err);
-            toastr.error(`Failed: ${err.message || err}`, 'StoryForge', { timeOut: 5000 });
+            toastr.error(t('cc.testConn.failed', { msg: err.message || err }), t('app'), { timeOut: 5000 });
         } finally {
             $btn.html(original);
             $btn.prop('disabled', false);
@@ -2619,16 +2727,18 @@ function ccAddSettingsPanel() {
     panel.on('click', '#sf-cc-test-conn', async function () {
         const $btn = $(this);
         const original = $btn.html();
-        $btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Testing');
+        $btn.html(`<i class="fa-solid fa-spinner fa-spin"></i> ${t('cc.testConn.testing')}`);
         $btn.prop('disabled', true);
         try {
             const txt = await ccCallBuiltinApi({
                 instructionPrompt: 'Respond with exactly the word OK and nothing else.',
             });
-            toastr.success(`Connection OK. Reply: "${String(txt).trim().slice(0, 40)}"`, 'StoryForge', { timeOut: 4000 });
+            toastr.success(
+                t('cc.testConn.ok', { reply: String(txt).trim().slice(0, 40) }),
+                t('app'), { timeOut: 4000 });
         } catch (err) {
             console.error(`[${MODULE_NAME}] Test connection failed`, err);
-            toastr.error(`Failed: ${err.message || err}`, 'StoryForge', { timeOut: 6000 });
+            toastr.error(t('cc.testConn.failed', { msg: err.message || err }), t('app'), { timeOut: 6000 });
         } finally {
             $btn.html(original);
             $btn.prop('disabled', false);
@@ -2660,12 +2770,12 @@ function ccAddSettingsPanel() {
 async function ccRefreshKeyStatus(panel) {
     const $status = panel.find('#sf-cc-key-status');
     if (!$status.length) return;
-    $status.text('Status: checking…');
+    $status.text(t('cc.apiKey.statusChecking'));
     const exists = await ccHasApiKey();
     $status
         .toggleClass('sf-cc-key-status-ok', exists)
         .toggleClass('sf-cc-key-status-missing', !exists)
-        .text(exists ? 'Status: key saved ✓' : 'Status: no key saved');
+        .text(exists ? t('cc.apiKey.statusSaved') : t('cc.apiKey.statusMissing'));
 }
 
 // === Slash commands =========================================================
@@ -2678,16 +2788,16 @@ function ccRegisterSlashCommands() {
     try {
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'sf-choices',
-            callback: () => { ccGenerateAndRender({ silent: false }); return 'Choice generation started'; },
-            helpString: '<div>StoryForge: generate choice cards under the last bot message.</div>',
+            callback: () => { ccGenerateAndRender({ silent: false }); return t('cc.slash.choicesStarted'); },
+            helpString: t('cc.slash.choicesHelp'),
         }));
     } catch { /* already registered */ }
 
     try {
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'sf-choices-clear',
-            callback: () => { ccRemoveCards(); return 'Cleared'; },
-            helpString: '<div>StoryForge: clear visible choice cards.</div>',
+            callback: () => { ccRemoveCards(); return t('common.cleared'); },
+            helpString: t('cc.slash.clearHelp'),
         }));
     } catch { /* already registered */ }
 }
@@ -2695,8 +2805,13 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.4.1 (Choice Cards: user + character options)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.5.0 (i18n + prompt templates + persistent panel)...`);
     try {
+        // Load translations before any UI is built so labels render in the
+        // right language on first paint.
+        await i18nLoad();
+        console.log(`[${MODULE_NAME}] i18n locale: ${I18N_LANG}`);
+
         // Namespaced + .off() so re-loads don't stack handlers.
         $(document).off('focusin.sf-qi').on('focusin.sf-qi', 'textarea, input[type="text"]', function () {
             lastFocusedEditable = this;
@@ -2722,7 +2837,7 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.4.1 loaded`);
+        console.log(`[${MODULE_NAME}] v1.5.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

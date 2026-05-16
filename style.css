@@ -545,7 +545,10 @@
     box-sizing: border-box;
     width: 100%;
     max-width: 100%;
-    margin: 6px 0 14px 0;
+    /* Tight margins so the wrap visually attaches to the message bubble
+       above. Bottom gets a small breathing room to separate it from the
+       next message. */
+    margin: 2px 0 6px 0;
     padding: 10px 12px;
     clear: both;
     float: none;
@@ -913,6 +916,33 @@
     opacity: 1;
 }
 
+/* === Visited / used card === */
+/* Marks cards the user already tapped during the current wrap. Stays
+   clickable in case they want to retap, but visually de-emphasized so
+   it's obvious what's been used. */
+.sf-cc-card.sf-cc-used {
+    opacity: .55;
+}
+.sf-cc-card.sf-cc-used .sf-cc-card-index {
+    background: color-mix(in srgb, var(--sf-cc-accent) 22%, transparent);
+    border-color: var(--sf-cc-accent);
+    color: var(--sf-cc-accent);
+    /* Replace the index digit with a checkmark when used. The text node
+       sits inside the badge; we hide it and inject ✓ via a pseudo. */
+    font-size: 0;
+    position: relative;
+}
+.sf-cc-card.sf-cc-used .sf-cc-card-index::after {
+    content: '✓';
+    font-size: calc(var(--mainFontSize, 14px) * 0.82);
+    font-weight: 700;
+    line-height: 1;
+}
+.sf-cc-card.sf-cc-used:hover,
+.sf-cc-card.sf-cc-used:focus-visible {
+    opacity: 1;
+}
+
 /* === Loading placeholder === */
 .sf-cc-wrap.sf-cc-loading {
     /* Height equals content height — header + padding. No room left for
@@ -1079,6 +1109,48 @@
     font-family: inherit;
     font-size: 12px;
     resize: vertical;
+    /* Allow long prompts to be edited comfortably without breaking the
+       panel layout. min-height matches roughly 8 rows. */
+    min-height: 140px;
+    line-height: 1.4;
+}
+
+/* === Prompt-template header (label + Reset button on the same line) === */
+.sf-cc-prompt-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    margin-bottom: 4px;
+}
+.sf-cc-prompt-head > label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-cc-prompt-reset {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+.sf-cc-prompt-hint {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    opacity: .75;
+}
+.sf-cc-prompt-hint code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 10.5px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* ============================================================
