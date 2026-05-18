@@ -67,9 +67,50 @@ async function i18nLoad() {
     }
 }
 
+// Pull the persona / character display names out of the SillyTavern context.
+// Used both for resolving ST-style {{user}} / {{char}} macros in UI strings
+// (so the section labels show real names) and for substituting them into the
+// builtin-API prompt before send (ST normally does that only for its own
+// generation pipeline; for our own /chat/completions request we have to do
+// it ourselves, otherwise the literal "{{char}}" reaches the small model).
+function ccGetPersonaName() {
+    try {
+        const ctx = SillyTavern?.getContext?.();
+        const name = ctx?.name1;
+        if (typeof name === 'string' && name.trim()) return name.trim();
+    } catch { /* ignore */ }
+    return 'User';
+}
+
+function ccGetCharacterName() {
+    try {
+        const ctx = SillyTavern?.getContext?.();
+        // Group chats expose name2 too, but for choice cards we want a single
+        // identity to talk about. ST keeps the active speaker in name2.
+        const name = ctx?.name2;
+        if (typeof name === 'string' && name.trim()) return name.trim();
+    } catch { /* ignore */ }
+    return 'Character';
+}
+
+// Replace SillyTavern's {{user}} and {{char}} macros in any string. Safe to
+// call before i18n strings are loaded (defaults to 'User' / 'Character').
+function ccSubstStMacros(str) {
+    if (typeof str !== 'string' || !str) return str;
+    if (str.indexOf('{{') === -1) return str;
+    const u = ccGetPersonaName();
+    const c = ccGetCharacterName();
+    return str
+        .replace(/\{\{user\}\}/g, u)
+        .replace(/\{\{char\}\}/g, c);
+}
+
 // Resolve a key, optionally substituting {{var}} placeholders.
 // {{app}} is always available and resolves to the localized app name (or
-// the literal "StoryForge" if i18n hasn't loaded yet).
+// the literal "StoryForge" if i18n hasn't loaded yet). {{user}} and {{char}}
+// are resolved to the active SillyTavern persona / character names, so UI
+// labels can say "What does Aria do" instead of a generic "What the
+// character does".
 function t(key, params) {
     let str = I18N_STRINGS[key];
     if (str === undefined) str = I18N_FALLBACK_STRINGS[key];
@@ -79,7 +120,12 @@ function t(key, params) {
         return key;
     }
     const appName = I18N_STRINGS.app || I18N_FALLBACK_STRINGS.app || 'StoryForge';
-    const all = { app: appName, ...(params || {}) };
+    const all = {
+        app: appName,
+        user: ccGetPersonaName(),
+        char: ccGetCharacterName(),
+        ...(params || {}),
+    };
     return str.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in all ? String(all[k]) : m));
 }
 
@@ -1171,23 +1217,65 @@ function ccGetSettings() {
 // Default prompt templates. Exposed as constants so the settings panel can
 // show them in placeholders / a "Reset" affordance. Use {{count}} as the
 // substitution token for the requested number of choices; {{user}} and
-// {{char}} are native SillyTavern macros that ST substitutes at send time.
+// {{char}} are native SillyTavern macros that ST substitutes at send time
+// for its own generation pipeline, and that we substitute manually for the
+// built-in API path (ccSubstStMacros).
+//
+// The choice variants are the part users complain about the most: small
+// models tend to produce 3-6 paraphrases of the same beat ("ask carefully",
+// "ask gently", "ask hesitantly"). We fight that with an explicit axis list
+// + a hard differentiation rule. Each option must shift the story in a
+// different direction (stakes, tone, relationship, information, location,
+// alliances). The model is told to pick a *different* axis per option.
+const CC_CHOICE_AXES_USER =
+    `Each of the {{count}} options MUST advance the story in a meaningfully different direction. Cover different axes — never two options on the same axis:\n` +
+    ` • COOPERATE / push the scene toward harmony, trust, intimacy, or alliance\n` +
+    ` • CONFRONT / introduce conflict, challenge, refusal, accusation, or pressure\n` +
+    ` • PROBE / extract information, ask a pointed question, investigate, read the room\n` +
+    ` • ACT / take a concrete physical action that changes the situation (move, take, give, touch, attack, leave)\n` +
+    ` • SHIFT TONE / inject humor, vulnerability, seduction, intimidation — a sudden emotional pivot\n` +
+    ` • DISRUPT / break the expected beat — a wild card, a secret reveal, a risky gamble, a third option no one offered\n`;
+
+const CC_CHOICE_AXES_CHAR =
+    `Each of the {{count}} options MUST move the story in a meaningfully different direction, grounded in {{char}}'s personality and current motives. Cover different axes — never two options on the same axis:\n` +
+    ` • REACH OUT / soften, comfort, confess, share, become more vulnerable with {{user}}\n` +
+    ` • PUSH BACK / challenge, refuse, test, provoke, set a boundary against {{user}}\n` +
+    ` • REVEAL / disclose information, a memory, a secret, a hidden feeling\n` +
+    ` • ACT / take an in-world action that changes the scene (move, fetch, attack, summon, leave)\n` +
+    ` • SHIFT TONE / pivot the mood — humor, dread, lust, anger, sorrow — a real emotional turn\n` +
+    ` • DISRUPT / do something unexpected for {{char}} but still believable — a wild card that forces {{user}} to react\n`;
+
 const CC_DEFAULT_USER_PROMPT =
-    `[StoryForge: Choice Cards] Based on the current scene and the most recent reply, suggest {{count}} distinct, in-character actions that {{user}} could take next. ` +
+    `[StoryForge: Choice Cards] You are generating a menu of next actions for {{user}} in an interactive story. ` +
+    `Read the current scene and the latest reply carefully, then propose {{count}} distinct in-character options that {{user}} could take next.\n\n` +
+    CC_CHOICE_AXES_USER +
+    `\nWriting rules:\n` +
+    ` • Each "name" starts with an active verb (e.g. "Kiss her", "Ask about the letter", "Walk out") — never a question or a label.\n` +
+    ` • Each "description" is 1-2 sentences: the concrete action {{user}} takes, the tone, AND the likely immediate consequence or scene shift.\n` +
+    ` • Options must NOT be paraphrases of each other. If two options would lead to a similar next reply, replace one of them.\n` +
+    ` • At least one option should raise the stakes or break the current rhythm — no menu where every choice is "ask politely".\n` +
+    ` • Stay grounded in established lore, characters, and current physical context. No meta-commentary, no fourth wall.\n\n` +
     `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
     '```json\n' +
-    `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what {{user}} does, how they sound, and the likely immediate consequence."}]}\n` +
+    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{user}} does, the tone, and the immediate consequence."}]}\n` +
     '```\n' +
-    `Rules: {{count}} entries, written from {{user}}'s perspective, no duplicates, no meta-commentary, no quotes around the JSON.`;
+    `Output exactly {{count}} entries.`;
 
 const CC_DEFAULT_CHAR_PROMPT =
-    `[StoryForge: Choice Cards — Character] Based on the current scene, suggest {{count}} distinct, in-character actions that {{char}} (not {{user}}) could plausibly take next. ` +
-    `Focus on actions/decisions/reactions that {{char}} would initiate from their own personality and motives. ` +
+    `[StoryForge: Choice Cards — Character] You are proposing {{count}} different next actions that {{char}} (not {{user}}) could initiate from their own personality, motives, and current emotional state. ` +
+    `Read the scene and the latest reply, then choose actions that genuinely belong to {{char}}.\n\n` +
+    CC_CHOICE_AXES_CHAR +
+    `\nWriting rules:\n` +
+    ` • Each "name" starts with an active verb describing what {{char}} does (e.g. "Pulls {{user}} closer", "Storms out", "Confesses the truth").\n` +
+    ` • Each "description" is 1-2 sentences: the action, {{char}}'s tone or expression, AND the immediate beat that follows for {{user}}.\n` +
+    ` • Options must NOT be paraphrases. If two options would lead to the same kind of next message, replace one.\n` +
+    ` • At least one option should clearly shift the dynamic between {{char}} and {{user}} — closer, further, more dangerous, more honest.\n` +
+    ` • Stay in character. No narration of {{user}}'s thoughts. No meta.\n\n` +
     `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
     '```json\n' +
-    `{"choices":[{"name":"Short label (max 8 words)","description":"One or two sentences: what {{char}} does and the immediate beat that follows."}]}\n` +
+    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{char}} does, their tone, and the beat that follows."}]}\n` +
     '```\n' +
-    `Rules: {{count}} entries, written from {{char}}'s perspective, no duplicates, no meta-commentary, no quotes around the JSON.`;
+    `Output exactly {{count}} entries.`;
 
 function ccSubstCount(template, count) {
     return String(template).replace(/\{\{count\}\}/g, String(count));
@@ -1209,16 +1297,27 @@ function ccBuildCharPromptTemplate(count) {
 // a single combined template rather than two separate ones; advanced users
 // who want custom dual prompts can switch off both-at-once and use the
 // individual templates instead.
+//
+// Same anti-paraphrase rules as the single-side prompts, just merged into
+// one request to halve the round-trip cost.
 function ccBuildBothPromptTemplate(userCount, charCount) {
     return (
-        `[StoryForge: Choice Cards — Duo] Based on the current scene and most recent reply, suggest TWO sets of next actions:\n` +
-        ` • ${userCount} actions that {{user}} could take next (from {{user}}'s perspective)\n` +
-        ` • ${charCount} actions that {{char}} could plausibly take next (from {{char}}'s perspective)\n` +
+        `[StoryForge: Choice Cards — Duo] Read the current scene and the latest reply, then produce TWO independent menus of next actions:\n` +
+        ` • ${userCount} options for {{user}} — what {{user}} could do next, from {{user}}'s perspective.\n` +
+        ` • ${charCount} options for {{char}} — what {{char}} could initiate next, from {{char}}'s own personality and motives (NOT what {{user}} wants {{char}} to do).\n\n` +
+        `Coverage rules (apply independently inside each menu):\n` +
+        ` • Each option must move the story in a meaningfully different direction. Spread them across these axes: COOPERATE, CONFRONT, PROBE, ACT (physical), SHIFT TONE, DISRUPT.\n` +
+        ` • No two options inside the same menu may be paraphrases of each other; if their next-reply would be similar, replace one.\n` +
+        ` • At least one option in each menu must visibly raise stakes or change the dynamic — no menu where every choice is "ask politely".\n\n` +
+        `Writing rules:\n` +
+        ` • Each "name" starts with an active verb, max 8 words.\n` +
+        ` • Each "description" is 1-2 sentences: the action, the tone, AND the immediate consequence / beat that follows.\n` +
+        ` • Stay in character. No meta-commentary, no fourth wall.\n\n` +
         `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
         '```json\n' +
-        `{"user_choices":[{"name":"Short label","description":"One or two sentences."}],"character_choices":[{"name":"Short label","description":"One or two sentences."}]}\n` +
+        `{"user_choices":[{"name":"Verb-led label","description":"What {{user}} does, tone, consequence."}],"character_choices":[{"name":"Verb-led label","description":"What {{char}} does, tone, beat that follows."}]}\n` +
         '```\n' +
-        `Rules: exact counts (${userCount} user, ${charCount} character), no duplicates, no meta-commentary.`
+        `Output exactly ${userCount} user_choices and ${charCount} character_choices.`
     );
 }
 
@@ -1449,11 +1548,17 @@ async function ccCallBuiltinApi({ instructionPrompt, signal }) {
         throw new Error('API key missing or not readable (allowKeysExposure may be off)');
     }
 
+    // Resolve {{user}} / {{char}} ourselves: when we POST directly to an
+    // external /chat/completions endpoint, SillyTavern's macro pipeline is
+    // bypassed entirely, so the literal placeholder would reach the model
+    // and confuse it ("a character named {{char}}").
+    const resolvedPrompt = ccSubstStMacros(instructionPrompt);
+
     const chatMessages = ccBuildChatMessages(Math.max(0, Math.min(20, s.ccContextSize | 0)));
     const messages = [
-        { role: 'system', content: instructionPrompt },
+        { role: 'system', content: resolvedPrompt },
         ...chatMessages,
-        { role: 'user', content: instructionPrompt },
+        { role: 'user', content: resolvedPrompt },
     ];
 
     const body = {
