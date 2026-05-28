@@ -262,6 +262,92 @@
     color: var(--SmartThemeQuoteColor, #999); font-weight: 600;
 }
 
+/* === Reminders (prompt folders) === */
+.sf-reminders-intro {
+    font-size: 11px; line-height: 1.45;
+    color: var(--SmartThemeQuoteColor, #999);
+    margin-bottom: 12px;
+}
+.sf-folder {
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.02));
+}
+.sf-folder-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #444);
+}
+.sf-folder-toggle { cursor: pointer; color: var(--SmartThemeQuoteColor, #c9a227); font-size: 14px; }
+.sf-folder-name {
+    flex: 1; min-width: 0;
+    padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 13px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.sf-folder-name:hover, .sf-folder-name:focus {
+    border-color: var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    outline: none;
+}
+.sf-folder-add, .sf-folder-delete {
+    cursor: pointer; font-size: 12px; padding: 4px;
+    color: var(--SmartThemeQuoteColor, #999); transition: color .15s;
+}
+.sf-folder-add:hover { color: #5cb85c; }
+.sf-folder-delete:hover { color: #ff6b6b; }
+.sf-folder-body { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+
+.sf-reminder {
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 8px; padding: 8px 10px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+}
+.sf-reminder-head { display: flex; align-items: center; gap: 8px; }
+.sf-reminder-head input[type="checkbox"] { flex: 0 0 auto; }
+.sf-rem-label {
+    flex: 1; min-width: 0;
+    padding: 4px 8px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    border: 1px solid transparent; background: transparent;
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.sf-rem-label:hover, .sf-rem-label:focus {
+    border-color: var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    outline: none;
+}
+.sf-reminder-status {
+    flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--SmartThemeQuoteColor, #999);
+    padding: 2px 6px; border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+    white-space: nowrap;
+}
+.sf-rem-delete { cursor: pointer; font-size: 12px; color: var(--SmartThemeQuoteColor, #999); transition: color .15s; padding: 2px; }
+.sf-rem-delete:hover { color: #ff6b6b; }
+.sf-rem-prompt {
+    width: 100%; min-height: 55px; resize: vertical; margin-top: 6px;
+    font-size: 12px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit; line-height: 1.5;
+}
+.sf-rem-prompt:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.sf-reminder-opts {
+    display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px;
+    font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);
+}
+.sf-reminder-opts label { display: flex; align-items: center; gap: 5px; }
+.sf-reminder-opts select,
+.sf-reminder-opts input[type="number"] {
+    padding: 3px 6px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.sf-reminder-opts input[type="number"] { width: 50px; }
+
 /* === Active badge === */
 .storyforge-active-badge {
     position: fixed; bottom: 80px; right: 20px; z-index: 9999;

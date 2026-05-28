@@ -174,6 +174,39 @@ const DEFAULT_TOOLS = [
 
 const activeInjections = new Map();
 
+// ==== Reminders ============================================================
+// Roles a reminder injection can use. Mirrors ST's setExtensionPrompt role
+// arg (0 = system, 1 = user, 2 = assistant). System is the safe default for
+// "model must not forget X" style notes.
+const REMINDER_ROLES = { system: 0, user: 1, assistant: 2 };
+const REMINDER_MODES = ['always', 'every'];
+const MAX_REMINDER_FIELD_LEN = 10000;
+
+// Per-reminder cycle counter. Keyed by reminder id, value = number of model
+// replies seen since this reminder last fired. In-memory only (resets on
+// reload / chat change), which matches "global, glances when due" semantics.
+const reminderCounters = new Map();
+
+const DEFAULT_REMINDER_FOLDERS = [
+    {
+        id: 'folder_appearance',
+        name: 'Appearance',
+        collapsed: false,
+        reminders: [
+            {
+                id: 'rem_outfit',
+                label: 'Outfit reminder',
+                enabled: false,
+                mode: 'every',
+                interval: 2,
+                depth: 1,
+                role: 'system',
+                prompt: '[Reminder] Keep {{char}}\'s and {{user}}\'s current outfits and appearance consistent with what was established earlier. Do not silently change clothing, hairstyle or notable physical details unless the story explicitly does so.',
+            },
+        ],
+    },
+];
+
 const DEFAULT_QUICK_INSERTS = [
     { id: 'qi_action', name: '**', enabled: true, description: 'Action', content: '**', cursorPosition: 1, insertPosition: 'as_is' },
     { id: 'qi_quote', name: '""', enabled: true, description: 'Quote', content: '""', cursorPosition: 1, insertPosition: 'as_is' },
@@ -189,6 +222,11 @@ const defaultSettings = Object.freeze({
     autoClear: true,
     tools: null,
     quickInserts: null,
+    // ==== Reminders (prompt folders) ====
+    // Folders group periodic / persistent prompt injections. Each reminder
+    // either stays in context permanently ('always') or surfaces once every
+    // N model replies ('every'). Counter only advances on bot replies.
+    reminderFolders: null,      // [{ id, name, collapsed, reminders: [...] }]
     qiBarVisible: true,
     sendBarButton: true,
     // ==== Choice Cards ====
@@ -374,6 +412,168 @@ function deleteQuickInsert(id) {
     const s = getSettings();
     s.quickInserts = getQuickInserts().filter(x => x.id !== id);
     saveSettings();
+}
+
+// ==== Reminders: data + CRUD ===============================================
+
+function getReminderFolders() {
+    const s = getSettings();
+    if (!s.reminderFolders) s.reminderFolders = structuredClone(DEFAULT_REMINDER_FOLDERS);
+    return s.reminderFolders;
+}
+
+// Flatten all reminders across folders into [{ folder, reminder }] pairs.
+function getAllReminders() {
+    const out = [];
+    for (const folder of getReminderFolders()) {
+        for (const rem of folder.reminders || []) out.push({ folder, reminder: rem });
+    }
+    return out;
+}
+
+function findReminder(remId) {
+    for (const folder of getReminderFolders()) {
+        const rem = (folder.reminders || []).find(r => r.id === remId);
+        if (rem) return { folder, reminder: rem };
+    }
+    return null;
+}
+
+function addReminderFolder(name) {
+    const folders = getReminderFolders();
+    const id = makeId('folder');
+    folders.push({ id, name: name || 'New folder', collapsed: false, reminders: [] });
+    saveSettings();
+    return id;
+}
+
+function renameReminderFolder(folderId, newName) {
+    const folder = getReminderFolders().find(f => f.id === folderId);
+    if (folder && newName.trim()) { folder.name = newName.trim(); saveSettings(); }
+}
+
+function deleteReminderFolder(folderId) {
+    const s = getSettings();
+    const folder = getReminderFolders().find(f => f.id === folderId);
+    // Clear any active injections owned by this folder's reminders first.
+    if (folder) for (const rem of folder.reminders || []) clearReminderInjection(rem.id);
+    s.reminderFolders = getReminderFolders().filter(f => f.id !== folderId);
+    saveSettings();
+}
+
+function addReminder(folderId, label, prompt) {
+    const folder = getReminderFolders().find(f => f.id === folderId);
+    if (!folder) return null;
+    const id = makeId('rem');
+    folder.reminders = folder.reminders || [];
+    folder.reminders.push({
+        id, label: label || 'Reminder', enabled: false,
+        mode: 'every', interval: 2, depth: 1, role: 'system',
+        prompt: prompt || '',
+    });
+    saveSettings();
+    return id;
+}
+
+function updateReminder(remId, data) {
+    const found = findReminder(remId);
+    if (!found) return;
+    const r = found.reminder;
+    if (typeof data.label === 'string') r.label = data.label;
+    if (typeof data.prompt === 'string') r.prompt = data.prompt.slice(0, MAX_REMINDER_FIELD_LEN);
+    if (typeof data.enabled === 'boolean') r.enabled = data.enabled;
+    if (REMINDER_MODES.includes(data.mode)) r.mode = data.mode;
+    if (Number.isFinite(data.interval)) r.interval = Math.min(Math.max(Math.floor(data.interval), 1), 50);
+    if (Number.isFinite(data.depth)) r.depth = Math.min(Math.max(Math.floor(data.depth), 0), 10);
+    if (data.role in REMINDER_ROLES) r.role = data.role;
+    saveSettings();
+    // Re-sync injection state immediately so toggling reflects without a reply.
+    syncReminderInjections();
+}
+
+function deleteReminder(remId) {
+    clearReminderInjection(remId);
+    reminderCounters.delete(remId);
+    for (const folder of getReminderFolders()) {
+        const before = (folder.reminders || []).length;
+        folder.reminders = (folder.reminders || []).filter(r => r.id !== remId);
+        if (folder.reminders.length !== before) break;
+    }
+    saveSettings();
+}
+
+// ==== Reminders: injection engine ==========================================
+
+function clearReminderInjection(remId) {
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_rem_${remId}`, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM,
+    );
+}
+
+function setReminderInjection(rem) {
+    const role = REMINDER_ROLES[rem.role] ?? ROLE_SYSTEM;
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_rem_${rem.id}`,
+        rem.prompt || '',
+        POSITION_IN_CHAT,
+        Number.isFinite(rem.depth) ? rem.depth : 1,
+        true,
+        role,
+    );
+}
+
+// Decide, for the upcoming generation, which reminders should be present in
+// context. 'always' reminders are always on. 'every N' reminders are on only
+// on the turn they are due (counter reached interval), then cleared again.
+// Called on init/toggle (no counter advance) and after each bot reply
+// (advance=true).
+function syncReminderInjections(advance = false) {
+    if (!getSettings().enabled) {
+        // Master toggle off: strip every reminder injection.
+        for (const { reminder } of getAllReminders()) clearReminderInjection(reminder.id);
+        return;
+    }
+    for (const { reminder } of getAllReminders()) {
+        if (!reminder.enabled || !reminder.prompt?.trim()) {
+            clearReminderInjection(reminder.id);
+            reminderCounters.delete(reminder.id);
+            continue;
+        }
+        if (reminder.mode === 'always') {
+            setReminderInjection(reminder);
+            continue;
+        }
+        // mode === 'every'
+        const interval = Math.max(1, reminder.interval || 1);
+        if (advance) {
+            const count = (reminderCounters.get(reminder.id) || 0) + 1;
+            if (count >= interval) {
+                reminderCounters.set(reminder.id, 0);
+                setReminderInjection(reminder);
+            } else {
+                reminderCounters.set(reminder.id, count);
+                clearReminderInjection(reminder.id);
+            }
+        } else {
+            // Toggle / init: disarm so every-N reminders only appear on their
+            // due turn (counter is preserved so progress isn't lost).
+            clearReminderInjection(reminder.id);
+        }
+    }
+    updateReminderBadge();
+}
+
+// Called when a bot reply finished rendering: advance every-N counters and
+// arm/disarm injections for the NEXT generation.
+function onBotReplyForReminders() {
+    syncReminderInjections(true);
+}
+
+function resetReminderCounters() {
+    reminderCounters.clear();
+    for (const { reminder } of getAllReminders()) {
+        if (reminder.mode === 'every') clearReminderInjection(reminder.id);
+    }
 }
 
 // Track the last focused editable textarea/input so quick inserts can target
@@ -871,9 +1071,87 @@ function updateBadge() {
     });
 }
 
+// Refresh the small "armed / next in N" hints inside the open popup so the
+// user can see when each every-N reminder will next surface. No-op when the
+// popup isn't open. Floating badge is intentionally avoided to reduce clutter.
+function updateReminderBadge() {
+    if (!$('.storyforge-popup').length) return;
+    for (const { reminder } of getAllReminders()) {
+        const el = $(`.sf-reminder-status[data-rem="${escapeHtml(reminder.id)}"]`);
+        if (!el.length) continue;
+        el.text(reminderStatusText(reminder));
+    }
+}
+
+function reminderStatusText(rem) {
+    if (!rem.enabled || !rem.prompt?.trim()) return t('rem.status.off');
+    if (rem.mode === 'always') return t('rem.status.always');
+    const interval = Math.max(1, rem.interval || 1);
+    const count = reminderCounters.get(rem.id) || 0;
+    const remaining = Math.max(0, interval - count);
+    return remaining === 0
+        ? t('rem.status.armed')
+        : t('rem.status.inN', { n: remaining });
+}
+
 // ==== Popup ====
 
 let currentPopup = null;
+
+// Build the Reminders section HTML (folders of periodic/persistent prompts).
+function buildRemindersHtml() {
+    const folders = getReminderFolders();
+    const roleOpts = (sel) => Object.keys(REMINDER_ROLES).map(r =>
+        `<option value="${r}" ${sel === r ? 'selected' : ''}>${escapeHtml(t('rem.role.' + r))}</option>`).join('');
+
+    const foldersHtml = folders.map(folder => {
+        const fid = escapeHtml(folder.id);
+        const remsHtml = (folder.reminders || []).map(rem => {
+            const rid = escapeHtml(rem.id);
+            const everyVisible = rem.mode === 'every' ? '' : 'style="display:none"';
+            return `<div class="sf-reminder" data-rem="${rid}">
+                <div class="sf-reminder-head">
+                    <input type="checkbox" class="sf-rem-enabled" data-rem="${rid}" ${rem.enabled ? 'checked' : ''} title="${escapeHtml(t('rem.enable'))}">
+                    <input type="text" class="sf-rem-label" data-rem="${rid}" maxlength="60" value="${escapeHtml(rem.label || '')}" placeholder="${escapeHtml(t('rem.labelPh'))}">
+                    <span class="sf-reminder-status" data-rem="${rid}">${escapeHtml(reminderStatusText(rem))}</span>
+                    <span class="sf-rem-delete fa-solid fa-xmark" data-rem="${rid}" title="${escapeHtml(t('common.delete'))}"></span>
+                </div>
+                <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
+                <div class="sf-reminder-opts">
+                    <label>${escapeHtml(t('rem.mode'))}
+                        <select class="sf-rem-mode" data-rem="${rid}">
+                            <option value="always" ${rem.mode === 'always' ? 'selected' : ''}>${escapeHtml(t('rem.mode.always'))}</option>
+                            <option value="every" ${rem.mode === 'every' ? 'selected' : ''}>${escapeHtml(t('rem.mode.every'))}</option>
+                        </select>
+                    </label>
+                    <label class="sf-rem-every-wrap" data-rem="${rid}" ${everyVisible}>${escapeHtml(t('rem.everyN'))}
+                        <input type="number" class="sf-rem-interval" data-rem="${rid}" min="1" max="50" value="${escapeHtml(String(rem.interval || 2))}">
+                    </label>
+                    <label>${escapeHtml(t('rem.depth'))}
+                        <input type="number" class="sf-rem-depth" data-rem="${rid}" min="0" max="10" value="${escapeHtml(String(rem.depth ?? 1))}">
+                    </label>
+                    <label>${escapeHtml(t('rem.role'))}
+                        <select class="sf-rem-role" data-rem="${rid}">${roleOpts(rem.role || 'system')}</select>
+                    </label>
+                </div>
+            </div>`;
+        }).join('');
+
+        return `<div class="sf-folder" data-folder="${fid}">
+            <div class="sf-folder-head">
+                <i class="fa-solid ${folder.collapsed ? 'fa-folder' : 'fa-folder-open'} sf-folder-toggle" data-folder="${fid}"></i>
+                <input type="text" class="sf-folder-name" data-folder="${fid}" maxlength="60" value="${escapeHtml(folder.name || '')}" placeholder="${escapeHtml(t('rem.folderPh'))}">
+                <span class="sf-folder-add fa-solid fa-plus" data-folder="${fid}" title="${escapeHtml(t('rem.addReminder'))}"></span>
+                <span class="sf-folder-delete fa-solid fa-trash" data-folder="${fid}" title="${escapeHtml(t('rem.deleteFolder'))}"></span>
+            </div>
+            <div class="sf-folder-body" ${folder.collapsed ? 'style="display:none"' : ''}>${remsHtml}</div>
+        </div>`;
+    }).join('');
+
+    return `<div class="sf-reminders-intro">${escapeHtml(t('rem.intro'))}</div>
+        ${foldersHtml}
+        <div class="storyforge-add-btn" id="sf-add-folder-btn"><i class="fa-solid fa-folder-plus"></i> ${escapeHtml(t('rem.addFolder'))}</div>`;
+}
 
 function buildPopupHtml() {
     const settings = getSettings();
@@ -924,6 +1202,13 @@ function buildPopupHtml() {
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-prompts">${promptEditors}</div>
+        </div>
+        <div class="storyforge-section">
+            <div class="storyforge-section-toggle" id="sf-toggle-reminders">
+                <h3><i class="fa-solid fa-bell"></i> ${escapeHtml(t('rem.section.title'))}</h3>
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div class="storyforge-section-body" id="sf-body-reminders">${buildRemindersHtml()}</div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-settings">
@@ -1055,6 +1340,9 @@ async function openStoryForgePopup() {
                 toastr.info(t('tool.resetDefaults'), t('app'));
             }
         });
+
+        // Reminders
+        bindReminders();
     });
 
     await popup.show();
@@ -1067,9 +1355,96 @@ function bindSections() {
         $(this).toggleClass('open');
         $('#sf-body-prompts').toggleClass('open');
     });
+    $('#sf-toggle-reminders').off('click').on('click', function () {
+        $(this).toggleClass('open');
+        $('#sf-body-reminders').toggleClass('open');
+    });
     $('#sf-toggle-settings').off('click').on('click', function () {
         $(this).toggleClass('open');
         $('#sf-body-settings').toggleClass('open');
+    });
+}
+
+// Wire up all reminder controls inside the open popup. Uses delegated,
+// namespaced handlers on #sf-body-reminders so they survive partial re-renders
+// and never stack across popup reopenings.
+function bindReminders() {
+    const $body = $('#sf-body-reminders');
+    if (!$body.length) return;
+    const NS = '.sf-rem';
+
+    const rerender = () => {
+        $('#sf-body-reminders').html(buildRemindersHtml());
+    };
+
+    // Add folder
+    $('#sf-add-folder-btn').off('click').on('click', () => {
+        addReminderFolder(t('rem.newFolderName'));
+        rerender();
+    });
+
+    $body.off(NS);
+
+    // Folder name rename
+    $body.on('change' + NS, '.sf-folder-name', function () {
+        renameReminderFolder($(this).data('folder'), $(this).val());
+    });
+    // Folder collapse toggle
+    $body.on('click' + NS, '.sf-folder-toggle', function () {
+        const fid = $(this).data('folder');
+        const folder = getReminderFolders().find(f => f.id === fid);
+        if (!folder) return;
+        folder.collapsed = !folder.collapsed;
+        saveSettings();
+        rerender();
+    });
+    // Add reminder to folder
+    $body.on('click' + NS, '.sf-folder-add', function () {
+        addReminder($(this).data('folder'), t('rem.newReminderName'), '');
+        rerender();
+    });
+    // Delete folder
+    $body.on('click' + NS, '.sf-folder-delete', async function () {
+        const fid = $(this).data('folder');
+        const folder = getReminderFolders().find(f => f.id === fid);
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(
+            t('rem.deleteFolder'), t('rem.confirmDeleteFolder', { name: folder?.name || '' }),
+        );
+        if (confirmed) { deleteReminderFolder(fid); rerender(); }
+    });
+
+    // Reminder fields
+    $body.on('change' + NS, '.sf-rem-enabled', function () {
+        updateReminder($(this).data('rem'), { enabled: $(this).is(':checked') });
+        updateReminderBadge();
+    });
+    $body.on('change' + NS, '.sf-rem-label', function () {
+        updateReminder($(this).data('rem'), { label: $(this).val() });
+    });
+    $body.on('input' + NS, '.sf-rem-prompt', function () {
+        updateReminder($(this).data('rem'), { prompt: $(this).val() });
+    });
+    $body.on('change' + NS, '.sf-rem-mode', function () {
+        const rid = $(this).data('rem');
+        const mode = $(this).val();
+        updateReminder(rid, { mode });
+        $(`.sf-rem-every-wrap[data-rem="${rid}"]`).toggle(mode === 'every');
+        updateReminderBadge();
+    });
+    $body.on('input' + NS, '.sf-rem-interval', function () {
+        updateReminder($(this).data('rem'), { interval: parseInt($(this).val(), 10) });
+        updateReminderBadge();
+    });
+    $body.on('input' + NS, '.sf-rem-depth', function () {
+        updateReminder($(this).data('rem'), { depth: parseInt($(this).val(), 10) });
+    });
+    $body.on('change' + NS, '.sf-rem-role', function () {
+        updateReminder($(this).data('rem'), { role: $(this).val() });
+    });
+    // Delete reminder
+    $body.on('click' + NS, '.sf-rem-delete', function () {
+        deleteReminder($(this).data('rem'));
+        rerender();
     });
 }
 
@@ -1105,6 +1480,9 @@ function refreshPopupContent() {
         const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('tool.reset.confirmTitle'), t('tool.reset.confirmBody'));
         if (confirmed) { resetToDefaults(); refreshPopupContent(); toastr.info(t('tool.resetDefaults'), t('app')); }
     });
+
+    // Rebind reminders
+    bindReminders();
 }
 
 // ==== Menu ====
@@ -2910,7 +3288,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.5.0 (i18n + prompt templates + persistent panel)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.6.0 (reminders / prompt folders)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -2942,7 +3320,22 @@ jQuery(async () => {
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
         });
-        console.log(`[${MODULE_NAME}] v1.5.0 loaded`);
+
+        // ==== Reminders ====
+        // Advance every-N counters once per finished model reply. Use
+        // CHARACTER_MESSAGE_RENDERED so only bot replies count (matches the
+        // "every N model replies" semantics; user messages are ignored).
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
+            try { onBotReplyForReminders(); } catch (e) { console.error(`[${MODULE_NAME}] reminder sync`, e); }
+        });
+        // New chat = fresh cycle: reset counters and disarm every-N reminders.
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            try { resetReminderCounters(); syncReminderInjections(false); } catch { /* ignore */ }
+        });
+        // Prime 'always' reminders on load.
+        try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
+
+        console.log(`[${MODULE_NAME}] v1.6.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

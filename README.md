@@ -39,6 +39,22 @@ Smart injection system:
 
 ---
 
+## Reminders (prompt folders)
+
+Persistent and periodic prompts that auto-inject so the model never forgets a detail (outfit, lore rule, OOC instruction...). No more tapping a button every turn.
+
+- **Folders** — group reminders by topic (Appearance, Lore, OOC rules...)
+- **Always** — the prompt stays in context on every reply
+- **Every N replies** — the prompt surfaces once every N model replies, then steps back (counts only the AI's replies)
+- Per-reminder **injection depth** (0-10) and **role** (System / User / Assistant)
+- A small status tag shows when each reminder will next fire (`always on`, `next reply`, `in 2`...)
+
+Example: put your persona's outfit description in an "Appearance" folder set to **Every 2 replies** — it auto-injects on every other AI reply so the model keeps clothing consistent.
+
+Reminders are global (shared across chats); the every-N cycle resets when you switch chats.
+
+---
+
 ## Installation
 
 ### SillyTavern built-in installer (recommended)
