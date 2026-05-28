@@ -179,7 +179,7 @@
   "cc.userPrompt": "User prompt template",
   "cc.charPrompt": "Character prompt template",
   "cc.promptPh": "Leave empty to use the default template (shown on Reset).",
-  "cc.promptHint": "Macros: <code>{{count}}</code> = number of choices, <code>{{user}}</code> / <code>{{char}}</code> = ST persona/character names. Empty = use default.",
+  "cc.promptHint": "Macros: <code>&#123;&#123;count&#125;&#125;</code> = number of choices, <code>&#123;&#123;user&#125;&#125;</code> / <code>&#123;&#123;char&#125;&#125;</code> = ST persona/character names. Empty = use default.",
   "cc.charPromptHint": "Used only when character options are enabled. Same macros as above.",
   "cc.testGen": "Test generation",
   "cc.clearVisible": "Clear visible cards",

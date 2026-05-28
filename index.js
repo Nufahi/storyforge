@@ -143,6 +143,24 @@ function escapeHtml(s) {
         .replace(/'/g, '&#39;');
 }
 
+// Resolve a localized string for an HTML sink. The translation template
+// itself is trusted (it ships in this extension's own i18n files and may
+// contain intentional markup like <code>), but every interpolated VALUE is
+// HTML-escaped. This closes the stored-XSS hole where {{user}}/{{char}}
+// expand to a persona / character-card name (attacker-controlled, e.g. a
+// shared card named `<img src=x onerror=...>`) inside a string that is
+// injected as raw HTML. Use this instead of bare t() whenever the result is
+// interpolated into an HTML string without a surrounding escapeHtml().
+function tHtml(key, params) {
+    const escaped = {};
+    if (params) for (const k of Object.keys(params)) escaped[k] = escapeHtml(String(params[k]));
+    // app/user/char are auto-injected by t(); force them through escapeHtml too.
+    escaped.app = escapeHtml(I18N_STRINGS.app || I18N_FALLBACK_STRINGS.app || 'StoryForge');
+    escaped.user = escapeHtml(ccGetPersonaName());
+    escaped.char = escapeHtml(ccGetCharacterName());
+    return t(key, escaped);
+}
+
 // Validate an icon class string. Font Awesome classes only contain letters,
 // digits, dashes and spaces. Anything else is rejected (prevents attribute
 // breakout via crafted import payloads).
@@ -186,6 +204,11 @@ const MAX_REMINDER_FIELD_LEN = 10000;
 // replies seen since this reminder last fired. In-memory only (resets on
 // reload / chat change), which matches "global, glances when due" semantics.
 const reminderCounters = new Map();
+// Set of reminder ids whose every-N injection is currently armed (it fired on
+// the last bot reply and must stay in context for the upcoming generation).
+// Lets non-advancing re-syncs (UI edits / toggles) preserve an armed reminder
+// instead of disarming it before it has a chance to be sent.
+const reminderArmed = new Set();
 
 const DEFAULT_REMINDER_FOLDERS = [
     {
@@ -495,6 +518,7 @@ function updateReminder(remId, data) {
 function deleteReminder(remId) {
     clearReminderInjection(remId);
     reminderCounters.delete(remId);
+    reminderArmed.delete(remId);
     for (const folder of getReminderFolders()) {
         const before = (folder.reminders || []).length;
         folder.reminders = (folder.reminders || []).filter(r => r.id !== remId);
@@ -538,10 +562,12 @@ function syncReminderInjections(advance = false) {
         if (!reminder.enabled || !reminder.prompt?.trim()) {
             clearReminderInjection(reminder.id);
             reminderCounters.delete(reminder.id);
+            reminderArmed.delete(reminder.id);
             continue;
         }
         if (reminder.mode === 'always') {
             setReminderInjection(reminder);
+            reminderArmed.delete(reminder.id);
             continue;
         }
         // mode === 'every'
@@ -551,13 +577,19 @@ function syncReminderInjections(advance = false) {
             if (count >= interval) {
                 reminderCounters.set(reminder.id, 0);
                 setReminderInjection(reminder);
+                reminderArmed.add(reminder.id);
             } else {
                 reminderCounters.set(reminder.id, count);
                 clearReminderInjection(reminder.id);
+                reminderArmed.delete(reminder.id);
             }
+        } else if (reminderArmed.has(reminder.id)) {
+            // Toggle / init / edit while already armed: keep the injection so an
+            // edit doesn't swallow a reminder that is due for the next reply.
+            // Re-apply in case depth / role / prompt just changed.
+            setReminderInjection(reminder);
         } else {
-            // Toggle / init: disarm so every-N reminders only appear on their
-            // due turn (counter is preserved so progress isn't lost).
+            // Not armed: every-N reminders stay out of context until due.
             clearReminderInjection(reminder.id);
         }
     }
@@ -572,6 +604,7 @@ function onBotReplyForReminders() {
 
 function resetReminderCounters() {
     reminderCounters.clear();
+    reminderArmed.clear();
     for (const { reminder } of getAllReminders()) {
         if (reminder.mode === 'every') clearReminderInjection(reminder.id);
     }
@@ -1229,7 +1262,7 @@ function buildPopupHtml() {
                 </div>
                 <div class="storyforge-settings-row">
                     <label for="sf-pop-depth">${escapeHtml(t('tool.popup.depth'))}</label>
-                    <input type="number" id="sf-pop-depth" min="0" max="10" value="${settings.depth}">
+                    <input type="number" id="sf-pop-depth" min="0" max="10" value="${escapeHtml(String(settings.depth))}">
                 </div>
                 <div class="storyforge-settings-row">
                     <input type="checkbox" id="sf-pop-autoclear" ${settings.autoClear ? 'checked' : ''}>
@@ -2415,7 +2448,7 @@ function ccApplyCharChoice(choice) {
         toastr.warning(t('cc.charAction.sendBusy'), t('app'), { timeOut: 4000 });
         return;
     }
-    toastr.info(t('cc.charAction.willDo', { name: choice.name }), t('app'), { timeOut: 2500 });
+    toastr.info(t('cc.charAction.willDo', { name: choice.name }), t('app'), { timeOut: 2500, escapeHtml: true });
     sendBtn.click();
 }
 
@@ -2804,91 +2837,91 @@ function ccAddSettingsPanel() {
     const s = ccGetSettings();
 
     const styleOptions = [
-        ['vn-classic', t('cc.style.vnClassic')],
-        ['minimal',    t('cc.style.minimal')],
-        ['neon',       t('cc.style.neon')],
-        ['parchment',  t('cc.style.parchment')],
+        ['vn-classic', tHtml('cc.style.vnClassic')],
+        ['minimal',    tHtml('cc.style.minimal')],
+        ['neon',       tHtml('cc.style.neon')],
+        ['parchment',  tHtml('cc.style.parchment')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccStyle === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const modeOptions = [
-        ['request', t('cc.mode.request')],
-        ['parse',   t('cc.mode.parse')],
-        ['hybrid',  t('cc.mode.hybrid')],
+        ['request', tHtml('cc.mode.request')],
+        ['parse',   tHtml('cc.mode.parse')],
+        ['hybrid',  tHtml('cc.mode.hybrid')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccMode === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const revealOptions = [
-        ['hover',   t('cc.reveal.hover')],
-        ['always',  t('cc.reveal.always')],
-        ['tooltip', t('cc.reveal.tooltip')],
+        ['hover',   tHtml('cc.reveal.hover')],
+        ['always',  tHtml('cc.reveal.always')],
+        ['tooltip', tHtml('cc.reveal.tooltip')],
     ].map(([v, l]) => `<option value="${v}" ${s.ccReveal === v ? 'selected' : ''}>${l}</option>`).join('');
 
     const panel = $(`
         <div id="sf-cc-panel" class="sf-qi-panel">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b><i class="fa-solid fa-comments"></i> ${t('cc.section.title')}</b>
+                    <b><i class="fa-solid fa-comments"></i> ${tHtml('cc.section.title')}</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <div class="sf-qi-info">${t('cc.section.intro')}</div>
+                    <div class="sf-qi-info">${tHtml('cc.section.intro')}</div>
 
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-enabled" ${s.ccEnabled ? 'checked' : ''}>
-                        <label for="sf-cc-enabled">${t('cc.enabled')}</label>
+                        <label for="sf-cc-enabled">${tHtml('cc.enabled')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-auto" ${s.ccAuto ? 'checked' : ''}>
-                        <label for="sf-cc-auto">${t('cc.auto')}</label>
+                        <label for="sf-cc-auto">${tHtml('cc.auto')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-sendbtn" ${s.ccSendBarButton ? 'checked' : ''}>
-                        <label for="sf-cc-sendbtn">${t('cc.sendBarBtn')}</label>
+                        <label for="sf-cc-sendbtn">${tHtml('cc.sendBarBtn')}</label>
                     </div>
                     <div class="sf-qi-option-row">
                         <input type="checkbox" id="sf-cc-collapsed" ${s.ccCollapsed ? 'checked' : ''}>
-                        <label for="sf-cc-collapsed">${t('cc.collapsed')}</label>
+                        <label for="sf-cc-collapsed">${tHtml('cc.collapsed')}</label>
                     </div>
 
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-mode">${t('cc.mode')}</label>
+                        <label for="sf-cc-mode">${tHtml('cc.mode')}</label>
                         <select id="sf-cc-mode">${modeOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-style">${t('cc.style')}</label>
+                        <label for="sf-cc-style">${tHtml('cc.style')}</label>
                         <select id="sf-cc-style">${styleOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-reveal">${t('cc.reveal')}</label>
+                        <label for="sf-cc-reveal">${tHtml('cc.reveal')}</label>
                         <select id="sf-cc-reveal">${revealOptions}</select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-count">${t('cc.count')}</label>
+                        <label for="sf-cc-count">${tHtml('cc.count')}</label>
                         <input type="number" id="sf-cc-count" min="2" max="6" value="${s.ccCount}">
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-apisource">${t('cc.apiSource')}</label>
+                        <label for="sf-cc-apisource">${tHtml('cc.apiSource')}</label>
                         <select id="sf-cc-apisource">
-                            <option value="default" ${s.ccApiSource === 'default' ? 'selected' : ''}>${t('cc.apiSource.default')}</option>
-                            <option value="st-profile" ${s.ccApiSource === 'st-profile' ? 'selected' : ''}>${t('cc.apiSource.stProfile')}</option>
-                            <option value="builtin" ${s.ccApiSource === 'builtin' ? 'selected' : ''}>${t('cc.apiSource.builtin')}</option>
+                            <option value="default" ${s.ccApiSource === 'default' ? 'selected' : ''}>${tHtml('cc.apiSource.default')}</option>
+                            <option value="st-profile" ${s.ccApiSource === 'st-profile' ? 'selected' : ''}>${tHtml('cc.apiSource.stProfile')}</option>
+                            <option value="builtin" ${s.ccApiSource === 'builtin' ? 'selected' : ''}>${tHtml('cc.apiSource.builtin')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row sf-cc-api-st-profile" style="${s.ccApiSource === 'st-profile' ? '' : 'display:none'}">
-                        <label for="sf-cc-profile">${t('cc.stProfile')}</label>
+                        <label for="sf-cc-profile">${tHtml('cc.stProfile')}</label>
                         <input type="text" id="sf-cc-profile" value="${escapeHtml(s.ccProfile || '')}" placeholder="${escapeHtml(t('cc.stProfilePh'))}">
                     </div>
                     <div class="sf-cc-builtin-block" style="${s.ccApiSource === 'builtin' ? '' : 'display:none'}">
                         <div class="sf-cc-info-box">
                             <i class="fa-solid fa-circle-info"></i>
-                            <div>${t('cc.builtin.info')}</div>
+                            <div>${tHtml('cc.builtin.info')}</div>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apiurl">${t('cc.apiUrl')}</label>
+                            <label for="sf-cc-apiurl">${tHtml('cc.apiUrl')}</label>
                             <input type="text" id="sf-cc-apiurl" value="${escapeHtml(s.ccApiUrl || '')}"
                                 placeholder="https://openrouter.ai/api/v1">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apikey">${t('cc.apiKey')}</label>
+                            <label for="sf-cc-apikey">${tHtml('cc.apiKey')}</label>
                             <div class="sf-cc-key-row">
                                 <input type="password" id="sf-cc-apikey" value="" placeholder="" autocomplete="off">
                                 <button id="sf-cc-key-save" class="menu_button" title="${escapeHtml(t('cc.apiKey.saveTitle'))}">
@@ -2901,10 +2934,10 @@ function ccAddSettingsPanel() {
                                     <i class="fa-solid fa-trash"></i>
                                 </button>
                             </div>
-                            <span class="sf-cc-key-status" id="sf-cc-key-status">${t('cc.apiKey.statusUnknown')}</span>
+                            <span class="sf-cc-key-status" id="sf-cc-key-status">${tHtml('cc.apiKey.statusUnknown')}</span>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-apimodel">${t('cc.model')}</label>
+                            <label for="sf-cc-apimodel">${tHtml('cc.model')}</label>
                             <div class="sf-cc-model-row">
                                 <div class="sf-cc-model-picker" id="sf-cc-model-picker">
                                     <input type="text" id="sf-cc-apimodel"
@@ -2917,78 +2950,78 @@ function ccAddSettingsPanel() {
                                         <i class="fa-solid fa-chevron-down"></i>
                                     </button>
                                     <div class="sf-cc-model-dropdown" id="sf-cc-model-dropdown" hidden>
-                                        <div class="sf-cc-model-dropdown-empty">${t('cc.model.empty')}</div>
+                                        <div class="sf-cc-model-dropdown-empty">${tHtml('cc.model.empty')}</div>
                                     </div>
                                 </div>
                                 <button id="sf-cc-fetch-models" class="menu_button" title="${escapeHtml(t('cc.model.fetchTitle'))}">
-                                    <i class="fa-solid fa-list"></i> ${t('cc.model.fetch')}
+                                    <i class="fa-solid fa-list"></i> ${tHtml('cc.model.fetch')}
                                 </button>
                             </div>
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-context">${t('cc.contextSize')}</label>
+                            <label for="sf-cc-context">${tHtml('cc.contextSize')}</label>
                             <input type="number" id="sf-cc-context" min="0" max="20" value="${s.ccContextSize}">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-temp">${t('cc.temperature')}</label>
+                            <label for="sf-cc-temp">${tHtml('cc.temperature')}</label>
                             <input type="number" id="sf-cc-temp" min="0" max="2" step="0.1" value="${s.ccTemperature}">
                         </div>
                         <div class="sf-cc-form-row">
-                            <label for="sf-cc-maxtok">${t('cc.maxTokens')}</label>
+                            <label for="sf-cc-maxtok">${tHtml('cc.maxTokens')}</label>
                             <input type="number" id="sf-cc-maxtok" min="64" max="4096" value="${s.ccMaxTokens}">
                         </div>
                         <div class="sf-qi-actions">
-                            <button id="sf-cc-test-conn" class="menu_button"><i class="fa-solid fa-plug"></i> ${t('cc.testConn')}</button>
+                            <button id="sf-cc-test-conn" class="menu_button"><i class="fa-solid fa-plug"></i> ${tHtml('cc.testConn')}</button>
                         </div>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-clickaction">${t('cc.clickAction')}</label>
+                        <label for="sf-cc-clickaction">${tHtml('cc.clickAction')}</label>
                         <select id="sf-cc-clickaction">
-                            <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>${t('cc.clickAction.insert')}</option>
-                            <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>${t('cc.clickAction.send')}</option>
+                            <option value="insert" ${s.ccClickAction === 'insert' ? 'selected' : ''}>${tHtml('cc.clickAction.insert')}</option>
+                            <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>${tHtml('cc.clickAction.send')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row">
-                        <label for="sf-cc-duomode">${t('cc.duoMode')}</label>
+                        <label for="sf-cc-duomode">${tHtml('cc.duoMode')}</label>
                         <select id="sf-cc-duomode">
-                            <option value="user-only"      ${s.ccDuoMode === 'user-only'      ? 'selected' : ''}>${t('cc.duoMode.userOnly')}</option>
-                            <option value="user-plus-btn"  ${s.ccDuoMode === 'user-plus-btn'  ? 'selected' : ''}>${t('cc.duoMode.userPlusBtn')}</option>
-                            <option value="user-plus-auto" ${s.ccDuoMode === 'user-plus-auto' ? 'selected' : ''}>${t('cc.duoMode.userPlusAuto')}</option>
-                            <option value="both-at-once"   ${s.ccDuoMode === 'both-at-once'   ? 'selected' : ''}>${t('cc.duoMode.bothAtOnce')}</option>
+                            <option value="user-only"      ${s.ccDuoMode === 'user-only'      ? 'selected' : ''}>${tHtml('cc.duoMode.userOnly')}</option>
+                            <option value="user-plus-btn"  ${s.ccDuoMode === 'user-plus-btn'  ? 'selected' : ''}>${tHtml('cc.duoMode.userPlusBtn')}</option>
+                            <option value="user-plus-auto" ${s.ccDuoMode === 'user-plus-auto' ? 'selected' : ''}>${tHtml('cc.duoMode.userPlusAuto')}</option>
+                            <option value="both-at-once"   ${s.ccDuoMode === 'both-at-once'   ? 'selected' : ''}>${tHtml('cc.duoMode.bothAtOnce')}</option>
                         </select>
                     </div>
                     <div class="sf-cc-form-row sf-cc-charcount-row" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
-                        <label for="sf-cc-charcount">${t('cc.charCount')}</label>
+                        <label for="sf-cc-charcount">${tHtml('cc.charCount')}</label>
                         <input type="number" id="sf-cc-charcount" min="2" max="6" value="${s.ccCharCount}">
                     </div>
-                    <div class="sf-qi-info sf-cc-charinfo" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">${t('cc.charInfo')}</div>
+                    <div class="sf-qi-info sf-cc-charinfo" style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">${tHtml('cc.charInfo')}</div>
                     <div class="sf-cc-form-row sf-cc-form-row-block">
                         <div class="sf-cc-prompt-head">
-                            <label for="sf-cc-custom">${t('cc.userPrompt')}</label>
+                            <label for="sf-cc-custom">${tHtml('cc.userPrompt')}</label>
                             <button id="sf-cc-custom-reset" class="menu_button sf-cc-prompt-reset" type="button" title="${escapeHtml(t('common.reset'))}">
-                                <i class="fa-solid fa-arrow-rotate-left"></i> ${t('common.reset')}
+                                <i class="fa-solid fa-arrow-rotate-left"></i> ${tHtml('common.reset')}
                             </button>
                         </div>
                         <textarea id="sf-cc-custom" rows="8"
                             placeholder="${escapeHtml(t('cc.promptPh'))}">${escapeHtml(s.ccCustomPrompt || '')}</textarea>
-                        <div class="sf-qi-info sf-cc-prompt-hint">${t('cc.promptHint')}</div>
+                        <div class="sf-qi-info sf-cc-prompt-hint">${tHtml('cc.promptHint')}</div>
                     </div>
                     <div class="sf-cc-form-row sf-cc-form-row-block sf-cc-charprompt-row"
                          style="${s.ccDuoMode === 'user-only' ? 'display:none' : ''}">
                         <div class="sf-cc-prompt-head">
-                            <label for="sf-cc-custom-char">${t('cc.charPrompt')}</label>
+                            <label for="sf-cc-custom-char">${tHtml('cc.charPrompt')}</label>
                             <button id="sf-cc-custom-char-reset" class="menu_button sf-cc-prompt-reset" type="button" title="${escapeHtml(t('common.reset'))}">
-                                <i class="fa-solid fa-arrow-rotate-left"></i> ${t('common.reset')}
+                                <i class="fa-solid fa-arrow-rotate-left"></i> ${tHtml('common.reset')}
                             </button>
                         </div>
                         <textarea id="sf-cc-custom-char" rows="8"
                             placeholder="${escapeHtml(t('cc.promptPh'))}">${escapeHtml(s.ccCustomCharPrompt || '')}</textarea>
-                        <div class="sf-qi-info sf-cc-prompt-hint">${t('cc.charPromptHint')}</div>
+                        <div class="sf-qi-info sf-cc-prompt-hint">${tHtml('cc.charPromptHint')}</div>
                     </div>
 
                     <div class="sf-qi-actions">
-                        <button id="sf-cc-test" class="menu_button"><i class="fa-solid fa-flask"></i> ${t('cc.testGen')}</button>
-                        <button id="sf-cc-clear" class="menu_button"><i class="fa-solid fa-broom"></i> ${t('cc.clearVisible')}</button>
+                        <button id="sf-cc-test" class="menu_button"><i class="fa-solid fa-flask"></i> ${tHtml('cc.testGen')}</button>
+                        <button id="sf-cc-clear" class="menu_button"><i class="fa-solid fa-broom"></i> ${tHtml('cc.clearVisible')}</button>
                     </div>
                 </div>
             </div>
