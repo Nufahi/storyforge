@@ -304,8 +304,17 @@
     border-radius: 8px; padding: 8px 10px;
     background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
 }
-.sf-reminder-head { display: flex; align-items: center; gap: 8px; }
-.sf-reminder-head input[type="checkbox"] { flex: 0 0 auto; }
+.sf-reminder-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.sf-reminder-head input[type="checkbox"] { flex: 0 0 auto; cursor: pointer; }
+.sf-rem-toggle {
+    flex: 0 0 auto; font-size: 11px; width: 12px;
+    color: var(--SmartThemeQuoteColor, #999);
+    transition: transform .15s ease;
+}
+.sf-reminder.open .sf-rem-toggle { transform: rotate(90deg); }
+/* Body (prompt + options) is hidden until the reminder is expanded. */
+.sf-reminder-body { display: none; }
+.sf-reminder.open .sf-reminder-body { display: block; }
 .sf-rem-label {
     flex: 1; min-width: 0;
     padding: 4px 8px; border-radius: 6px; font-size: 13px; font-weight: 600;

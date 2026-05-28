@@ -197,6 +197,7 @@ const DEFAULT_REMINDER_FOLDERS = [
                 id: 'rem_outfit',
                 label: 'Outfit reminder',
                 enabled: false,
+                collapsed: true,
                 mode: 'every',
                 interval: 2,
                 depth: 1,
@@ -467,7 +468,7 @@ function addReminder(folderId, label, prompt) {
     const id = makeId('rem');
     folder.reminders = folder.reminders || [];
     folder.reminders.push({
-        id, label: label || 'Reminder', enabled: false,
+        id, label: label || 'Reminder', enabled: false, collapsed: false,
         mode: 'every', interval: 2, depth: 1, role: 'system',
         prompt: prompt || '',
     });
@@ -1109,30 +1110,36 @@ function buildRemindersHtml() {
         const remsHtml = (folder.reminders || []).map(rem => {
             const rid = escapeHtml(rem.id);
             const everyVisible = rem.mode === 'every' ? '' : 'style="display:none"';
-            return `<div class="sf-reminder" data-rem="${rid}">
-                <div class="sf-reminder-head">
+            // Reminders default to collapsed (only the head row shows) to keep
+            // the panel compact, especially on mobile. Tap the row to expand.
+            const isOpen = rem.collapsed === false;
+            return `<div class="sf-reminder${isOpen ? ' open' : ''}" data-rem="${rid}">
+                <div class="sf-reminder-head" data-rem="${rid}">
+                    <i class="fa-solid fa-chevron-right sf-rem-toggle" data-rem="${rid}"></i>
                     <input type="checkbox" class="sf-rem-enabled" data-rem="${rid}" ${rem.enabled ? 'checked' : ''} title="${escapeHtml(t('rem.enable'))}">
                     <input type="text" class="sf-rem-label" data-rem="${rid}" maxlength="60" value="${escapeHtml(rem.label || '')}" placeholder="${escapeHtml(t('rem.labelPh'))}">
                     <span class="sf-reminder-status" data-rem="${rid}">${escapeHtml(reminderStatusText(rem))}</span>
                     <span class="sf-rem-delete fa-solid fa-xmark" data-rem="${rid}" title="${escapeHtml(t('common.delete'))}"></span>
                 </div>
-                <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
-                <div class="sf-reminder-opts">
-                    <label>${escapeHtml(t('rem.mode'))}
-                        <select class="sf-rem-mode" data-rem="${rid}">
-                            <option value="always" ${rem.mode === 'always' ? 'selected' : ''}>${escapeHtml(t('rem.mode.always'))}</option>
-                            <option value="every" ${rem.mode === 'every' ? 'selected' : ''}>${escapeHtml(t('rem.mode.every'))}</option>
-                        </select>
-                    </label>
-                    <label class="sf-rem-every-wrap" data-rem="${rid}" ${everyVisible}>${escapeHtml(t('rem.everyN'))}
-                        <input type="number" class="sf-rem-interval" data-rem="${rid}" min="1" max="50" value="${escapeHtml(String(rem.interval || 2))}">
-                    </label>
-                    <label>${escapeHtml(t('rem.depth'))}
-                        <input type="number" class="sf-rem-depth" data-rem="${rid}" min="0" max="10" value="${escapeHtml(String(rem.depth ?? 1))}">
-                    </label>
-                    <label>${escapeHtml(t('rem.role'))}
-                        <select class="sf-rem-role" data-rem="${rid}">${roleOpts(rem.role || 'system')}</select>
-                    </label>
+                <div class="sf-reminder-body">
+                    <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
+                    <div class="sf-reminder-opts">
+                        <label>${escapeHtml(t('rem.mode'))}
+                            <select class="sf-rem-mode" data-rem="${rid}">
+                                <option value="always" ${rem.mode === 'always' ? 'selected' : ''}>${escapeHtml(t('rem.mode.always'))}</option>
+                                <option value="every" ${rem.mode === 'every' ? 'selected' : ''}>${escapeHtml(t('rem.mode.every'))}</option>
+                            </select>
+                        </label>
+                        <label class="sf-rem-every-wrap" data-rem="${rid}" ${everyVisible}>${escapeHtml(t('rem.everyN'))}
+                            <input type="number" class="sf-rem-interval" data-rem="${rid}" min="1" max="50" value="${escapeHtml(String(rem.interval || 2))}">
+                        </label>
+                        <label>${escapeHtml(t('rem.depth'))}
+                            <input type="number" class="sf-rem-depth" data-rem="${rid}" min="0" max="10" value="${escapeHtml(String(rem.depth ?? 1))}">
+                        </label>
+                        <label>${escapeHtml(t('rem.role'))}
+                            <select class="sf-rem-role" data-rem="${rid}">${roleOpts(rem.role || 'system')}</select>
+                        </label>
+                    </div>
                 </div>
             </div>`;
         }).join('');
@@ -1411,6 +1418,18 @@ function bindReminders() {
             t('rem.deleteFolder'), t('rem.confirmDeleteFolder', { name: folder?.name || '' }),
         );
         if (confirmed) { deleteReminderFolder(fid); rerender(); }
+    });
+
+    // Reminder expand/collapse. Tap anywhere on the head row except the
+    // interactive controls (checkbox / label input / delete). Toggles the
+    // class without re-rendering so focus/scroll stay put on mobile.
+    $body.on('click' + NS, '.sf-reminder-head', function (e) {
+        if ($(e.target).is('input, .sf-rem-delete') || $(e.target).closest('.sf-rem-delete').length) return;
+        const rid = $(this).data('rem');
+        const $card = $(this).closest('.sf-reminder');
+        const open = $card.toggleClass('open').hasClass('open');
+        const found = findReminder(rid);
+        if (found) { found.reminder.collapsed = !open; saveSettings(); }
     });
 
     // Reminder fields
