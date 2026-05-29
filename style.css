@@ -437,6 +437,26 @@
     font-style: italic;
     margin-bottom: 8px;
 }
+.sf-qi-sub {
+    margin: -2px 0 8px 24px;
+    font-size: 11px;
+}
+.sf-cc-subhead {
+    margin: 14px 0 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.12));
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.sf-cc-subhead i { opacity: .8; }
+.sf-cc-dice-block {
+    margin-left: 4px;
+    padding-left: 8px;
+    border-left: 2px solid var(--SmartThemeBorderColor, rgba(255,255,255,.12));
+}
 .sf-qi-settings-list {
     display: flex;
     flex-direction: column;
@@ -1009,6 +1029,94 @@
     max-height: 200px;
     margin-top: 6px;
     opacity: 1;
+}
+
+/* === Tag badges (axis + risk) === */
+.sf-cc-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.sf-cc-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.72);
+    font-weight: 600;
+    line-height: 1.4;
+    border: 1px solid var(--sf-cc-border);
+    background: color-mix(in srgb, var(--sf-cc-text) 6%, transparent);
+    color: var(--sf-cc-text-dim);
+    white-space: nowrap;
+}
+.sf-cc-badge i { font-size: .9em; opacity: .9; }
+
+/* Axis badges share the accent color but stay subtle. */
+.sf-cc-axis {
+    color: var(--sf-cc-accent);
+    border-color: color-mix(in srgb, var(--sf-cc-accent) 35%, var(--sf-cc-border));
+    background: color-mix(in srgb, var(--sf-cc-accent) 10%, transparent);
+}
+
+/* Risk tiers get distinct semantic colors. */
+.sf-cc-risk-safe {
+    color: #4caf83;
+    border-color: color-mix(in srgb, #4caf83 45%, var(--sf-cc-border));
+    background: color-mix(in srgb, #4caf83 12%, transparent);
+}
+.sf-cc-risk-low {
+    color: #6fae4c;
+    border-color: color-mix(in srgb, #6fae4c 45%, var(--sf-cc-border));
+    background: color-mix(in srgb, #6fae4c 12%, transparent);
+}
+.sf-cc-risk-medium {
+    color: #d9a23a;
+    border-color: color-mix(in srgb, #d9a23a 45%, var(--sf-cc-border));
+    background: color-mix(in srgb, #d9a23a 12%, transparent);
+}
+.sf-cc-risk-high {
+    color: #d65a4a;
+    border-color: color-mix(in srgb, #d65a4a 50%, var(--sf-cc-border));
+    background: color-mix(in srgb, #d65a4a 14%, transparent);
+}
+
+/* Left risk accent stripe on the card itself. */
+.sf-cc-card-risk-medium { box-shadow: inset 3px 0 0 color-mix(in srgb, #d9a23a 70%, transparent); }
+.sf-cc-card-risk-high { box-shadow: inset 3px 0 0 color-mix(in srgb, #d65a4a 75%, transparent); }
+
+/* === Roll (dice) button === */
+.sf-cc-roll {
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px !important;
+    margin: 0 !important;
+    font-size: calc(var(--mainFontSize, 14px) * 0.78) !important;
+    border-radius: 999px !important;
+    border: 1px solid color-mix(in srgb, var(--sf-cc-accent) 40%, var(--sf-cc-border)) !important;
+    background: color-mix(in srgb, var(--sf-cc-accent) 12%, transparent) !important;
+    color: var(--sf-cc-accent) !important;
+    cursor: pointer;
+    transition: background .18s ease, transform .12s ease, border-color .18s ease;
+}
+.sf-cc-roll:hover {
+    background: color-mix(in srgb, var(--sf-cc-accent) 22%, transparent) !important;
+    transform: translateY(-1px);
+}
+.sf-cc-roll:active { transform: translateY(0) scale(.97); }
+.sf-cc-roll i { font-size: 1em; }
+
+/* Roll outcome feedback on the card. */
+.sf-cc-card.sf-cc-rolled-success {
+    box-shadow: inset 3px 0 0 #4caf83, 0 0 0 1px color-mix(in srgb, #4caf83 50%, transparent);
+}
+.sf-cc-card.sf-cc-rolled-fail {
+    box-shadow: inset 3px 0 0 #d65a4a, 0 0 0 1px color-mix(in srgb, #d65a4a 50%, transparent);
 }
 
 /* === Visited / used card === */

@@ -285,6 +285,20 @@ const defaultSettings = Object.freeze({
     // Acts like a StoryForge tool injection ([OOC: ...]) at depth=1 then
     // auto-triggers the Send button so the model rolls the action.
     ccCharActionDepth: 1,
+    // === Mechanics: tags + dice ===
+    // When true, clicking a user card inserts "name — description" into the
+    // send bar instead of just the name, so the model sees the full intent
+    // and its likely consequence.
+    ccSendDescription: true,
+    // Show the risk/axis badges the model returns on each card.
+    ccShowTags: true,
+    // Enable the per-card "Roll" button (percentile check against risk tier).
+    ccDice: true,
+    // Success chance per risk tier (percent). d100 <= chance == success.
+    ccChanceSafe: 100,
+    ccChanceLow: 85,
+    ccChanceMedium: 60,
+    ccChanceHigh: 35,
 });
 
 // Models that the user has fetched once via "Fetch models" — cached in memory
@@ -1643,7 +1657,31 @@ function ccGetSettings() {
     s.ccTemperature = Number.isFinite(t) ? Math.min(Math.max(t, 0), 2) : 0.7;
     const mt = parseInt(s.ccMaxTokens, 10);
     s.ccMaxTokens = Number.isFinite(mt) ? Math.min(Math.max(mt, 64), 4096) : 800;
+    // Mechanics flags + dice chances.
+    s.ccSendDescription = s.ccSendDescription !== false;
+    s.ccShowTags = s.ccShowTags !== false;
+    s.ccDice = s.ccDice !== false;
+    const clampPct = (v, dflt) => {
+        const n = parseInt(v, 10);
+        return Number.isFinite(n) ? Math.min(Math.max(n, 0), 100) : dflt;
+    };
+    s.ccChanceSafe = clampPct(s.ccChanceSafe, 100);
+    s.ccChanceLow = clampPct(s.ccChanceLow, 85);
+    s.ccChanceMedium = clampPct(s.ccChanceMedium, 60);
+    s.ccChanceHigh = clampPct(s.ccChanceHigh, 35);
     return s;
+}
+
+// Map a normalized risk tier to its configured success chance (percent).
+function ccRiskChance(risk) {
+    const s = ccGetSettings();
+    switch (risk) {
+        case 'safe': return s.ccChanceSafe;
+        case 'low': return s.ccChanceLow;
+        case 'medium': return s.ccChanceMedium;
+        case 'high': return s.ccChanceHigh;
+        default: return null; // no risk tag → no dice
+    }
 }
 
 // Default prompt templates. Exposed as constants so the settings panel can
@@ -1677,6 +1715,16 @@ const CC_CHOICE_AXES_CHAR =
     ` • SHIFT TONE / pivot the mood — humor, dread, lust, anger, sorrow — a real emotional turn\n` +
     ` • DISRUPT / do something unexpected for {{char}} but still believable — a wild card that forces {{user}} to react\n`;
 
+// Shared block telling the model to tag each option with a risk tier and a
+// story axis. The risk tier drives the optional dice mechanic in the UI; the
+// axis is shown as a colored badge and reinforces the anti-paraphrase rule.
+const CC_TAGS_INSTRUCTION =
+    `For EVERY option also provide two tags:\n` +
+    ` • "risk": how likely the action is to go wrong or backfire, one of exactly: ` +
+    `"safe" (no real chance of failure), "low" (mostly succeeds), "medium" (could go either way), "high" (bold gamble, easily backfires).\n` +
+    ` • "axis": the kind of move, one of exactly: ` +
+    `"cooperate", "confront", "probe", "act", "shift" (emotional pivot), "disrupt" (wild card). Use a different axis for each option.\n\n`;
+
 const CC_DEFAULT_USER_PROMPT =
     `[StoryForge: Choice Cards] You are generating a menu of next actions for {{user}} in an interactive story. ` +
     `Read the current scene and the latest reply carefully, then propose {{count}} distinct in-character options that {{user}} could take next.\n\n` +
@@ -1687,9 +1735,10 @@ const CC_DEFAULT_USER_PROMPT =
     ` • Options must NOT be paraphrases of each other. If two options would lead to a similar next reply, replace one of them.\n` +
     ` • At least one option should raise the stakes or break the current rhythm — no menu where every choice is "ask politely".\n` +
     ` • Stay grounded in established lore, characters, and current physical context. No meta-commentary, no fourth wall.\n\n` +
+    CC_TAGS_INSTRUCTION +
     `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
     '```json\n' +
-    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{user}} does, the tone, and the immediate consequence."}]}\n` +
+    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{user}} does, the tone, and the immediate consequence.","risk":"safe|low|medium|high","axis":"cooperate|confront|probe|act|shift|disrupt"}]}\n` +
     '```\n' +
     `Output exactly {{count}} entries.`;
 
@@ -1703,9 +1752,10 @@ const CC_DEFAULT_CHAR_PROMPT =
     ` • Options must NOT be paraphrases. If two options would lead to the same kind of next message, replace one.\n` +
     ` • At least one option should clearly shift the dynamic between {{char}} and {{user}} — closer, further, more dangerous, more honest.\n` +
     ` • Stay in character. No narration of {{user}}'s thoughts. No meta.\n\n` +
+    CC_TAGS_INSTRUCTION +
     `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
     '```json\n' +
-    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{char}} does, their tone, and the beat that follows."}]}\n` +
+    `{"choices":[{"name":"Verb-led label, max 8 words","description":"What {{char}} does, their tone, and the beat that follows.","risk":"safe|low|medium|high","axis":"cooperate|confront|probe|act|shift|disrupt"}]}\n` +
     '```\n' +
     `Output exactly {{count}} entries.`;
 
@@ -1745,9 +1795,10 @@ function ccBuildBothPromptTemplate(userCount, charCount) {
         ` • Each "name" starts with an active verb, max 8 words.\n` +
         ` • Each "description" is 1-2 sentences: the action, the tone, AND the immediate consequence / beat that follows.\n` +
         ` • Stay in character. No meta-commentary, no fourth wall.\n\n` +
+        CC_TAGS_INSTRUCTION +
         `Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n` +
         '```json\n' +
-        `{"user_choices":[{"name":"Verb-led label","description":"What {{user}} does, tone, consequence."}],"character_choices":[{"name":"Verb-led label","description":"What {{char}} does, tone, beat that follows."}]}\n` +
+        `{"user_choices":[{"name":"Verb-led label","description":"What {{user}} does, tone, consequence.","risk":"safe|low|medium|high","axis":"cooperate|confront|probe|act|shift|disrupt"}],"character_choices":[{"name":"Verb-led label","description":"What {{char}} does, tone, beat that follows.","risk":"safe|low|medium|high","axis":"cooperate|confront|probe|act|shift|disrupt"}]}\n` +
         '```\n' +
         `Output exactly ${userCount} user_choices and ${charCount} character_choices.`
     );
@@ -1796,7 +1847,36 @@ function ccExtractJson(text) {
     return null;
 }
 
-// Take a raw array-of-objects and produce {name, description} entries.
+// Allowed risk tiers and story axes. Anything the model returns outside these
+// sets is normalized to a safe default so it can never become a CSS-class /
+// attribute injection vector when we interpolate it into the card markup.
+const CC_RISK_TIERS = ['safe', 'low', 'medium', 'high'];
+const CC_AXES = ['cooperate', 'confront', 'probe', 'act', 'shift', 'disrupt'];
+
+function ccNormalizeRisk(value) {
+    const v = String(value || '').trim().toLowerCase();
+    if (CC_RISK_TIERS.includes(v)) return v;
+    // Common synonyms small models love to use.
+    if (/none|trivial|certain|guaranteed/.test(v)) return 'safe';
+    if (/easy|minor|small/.test(v)) return 'low';
+    if (/mod|med|fair|risky/.test(v)) return 'medium';
+    if (/danger|hard|extreme|reckless|deadly/.test(v)) return 'high';
+    return ''; // unknown → no risk badge
+}
+
+function ccNormalizeAxis(value) {
+    const v = String(value || '').trim().toLowerCase();
+    if (CC_AXES.includes(v)) return v;
+    if (/coop|harmon|trust|ally|allianc|intim/.test(v)) return 'cooperate';
+    if (/confront|conflict|challeng|refus|accus|pressure|push/.test(v)) return 'confront';
+    if (/probe|ask|question|investig|inquir|read/.test(v)) return 'probe';
+    if (/act|physical|move|attack|grab|touch/.test(v)) return 'act';
+    if (/tone|humor|seduc|vulnerab|emot|pivot|mood/.test(v)) return 'shift';
+    if (/disrupt|wild|gamble|secret|reveal|risk/.test(v)) return 'disrupt';
+    return '';
+}
+
+// Take a raw array-of-objects and produce {name, description, risk, axis} entries.
 function ccCleanChoiceArray(list) {
     if (!Array.isArray(list)) return [];
     const cleaned = [];
@@ -1811,7 +1891,9 @@ function ccCleanChoiceArray(list) {
             : typeof item.detail === 'string'
             ? item.detail.trim().slice(0, CC_MAX_DESC)
             : '';
-        cleaned.push({ name, description });
+        const risk = ccNormalizeRisk(item.risk ?? item.risk_level ?? item.danger);
+        const axis = ccNormalizeAxis(item.axis ?? item.type ?? item.category);
+        cleaned.push({ name, description, risk, axis });
         if (cleaned.length >= 6) break;
     }
     return cleaned;
@@ -2190,7 +2272,51 @@ function ccGetLastBotMessageEl() {
 // Build a grid of <.sf-cc-card> from a choices array. side must be 'user' or
 // 'char'; anything else is rejected so an accidental future call site can't
 // turn into an attribute-injection vector.
+// Risk tier → display label key + icon. Axis → icon. Both inputs are already
+// normalized to a known whitelist by the parser, so it's safe to drop them
+// straight into class names.
+const CC_RISK_ICON = {
+    safe: 'fa-shield-halved',
+    low: 'fa-circle-check',
+    medium: 'fa-scale-balanced',
+    high: 'fa-triangle-exclamation',
+};
+const CC_AXIS_ICON = {
+    cooperate: 'fa-handshake',
+    confront: 'fa-hand-fist',
+    probe: 'fa-magnifying-glass',
+    act: 'fa-bolt',
+    shift: 'fa-masks-theater',
+    disrupt: 'fa-dice',
+};
+
+function ccBuildBadgesHtml(c) {
+    const s = ccGetSettings();
+    if (!s.ccShowTags) return '';
+    const parts = [];
+    // axis is whitelisted; safe in class + as text via t().
+    if (c.axis && CC_AXIS_ICON[c.axis]) {
+        parts.push(
+            `<span class="sf-cc-badge sf-cc-axis sf-cc-axis-${c.axis}">` +
+            `<i class="fa-solid ${CC_AXIS_ICON[c.axis]}"></i>` +
+            `<span>${escapeHtml(t('cc.axis.' + c.axis))}</span></span>`
+        );
+    }
+    if (c.risk && CC_RISK_ICON[c.risk]) {
+        const chance = ccRiskChance(c.risk);
+        const chanceTxt = (s.ccDice && Number.isFinite(chance) && chance < 100)
+            ? ` ${chance}%` : '';
+        parts.push(
+            `<span class="sf-cc-badge sf-cc-risk sf-cc-risk-${c.risk}" title="${escapeHtml(t('cc.risk.' + c.risk))}">` +
+            `<i class="fa-solid ${CC_RISK_ICON[c.risk]}"></i>` +
+            `<span>${escapeHtml(t('cc.risk.' + c.risk))}${escapeHtml(chanceTxt)}</span></span>`
+        );
+    }
+    return parts.length ? `<div class="sf-cc-badges">${parts.join('')}</div>` : '';
+}
+
 function ccBuildCardsHtml(choices, side, revealMode) {
+    const s = ccGetSettings();
     const safeSide = side === 'char' ? 'char' : 'user';
     return choices.map((c, idx) => {
         const name = escapeHtml(c.name);
@@ -2198,15 +2324,29 @@ function ccBuildCardsHtml(choices, side, revealMode) {
         // desc has been escapeHtml'd, so `"` is already &quot; — safe inside
         // double-quoted title attribute.
         const titleAttr = revealMode === 'tooltip' && desc ? ` title="${desc}"` : '';
+        const badges = ccBuildBadgesHtml(c);
+        // Dice button: only on user cards that carry a rollable risk tier.
+        const chance = ccRiskChance(c.risk);
+        const showRoll = s.ccDice && safeSide === 'user'
+            && c.risk && Number.isFinite(chance) && chance < 100;
+        const rollBtn = showRoll
+            ? `<button class="sf-cc-roll menu_button" type="button" tabindex="-1"
+                    title="${escapeHtml(t('cc.roll.title', { chance }))}">
+                   <i class="fa-solid fa-dice-d20"></i>
+                   <span>${escapeHtml(t('cc.roll.btn'))}</span>
+               </button>`
+            : '';
         return `
-        <div class="sf-cc-card" data-cc-idx="${idx}" data-cc-side="${safeSide}" tabindex="0" role="button"${titleAttr}>
+        <div class="sf-cc-card${c.risk ? ' sf-cc-card-risk-' + c.risk : ''}" data-cc-idx="${idx}" data-cc-side="${safeSide}" tabindex="0" role="button"${titleAttr}>
             <div class="sf-cc-card-index">${idx + 1}</div>
             <div class="sf-cc-card-body">
                 <div class="sf-cc-card-name">${name}</div>
                 ${desc && revealMode !== 'tooltip'
                     ? `<div class="sf-cc-card-desc">${desc}</div>`
                     : ''}
+                ${badges}
             </div>
+            ${rollBtn}
         </div>`;
     }).join('');
 }
@@ -2344,13 +2484,58 @@ function ccAppendCharSection(charChoices) {
 // User-side card: insert the action text into the send bar, optionally autosend.
 // When `suppressSend` is true (e.g. user-plus-auto mode), we never auto-fire
 // the Send button — the user is expected to wait for character options first.
-function ccApplyUserChoice(choice, { suppressSend = false } = {}) {
+// Roll a percentile check for a choice's risk tier. Returns a structured
+// result object, or null if the choice has no rollable risk.
+function ccRollChoice(choice) {
+    const chance = ccRiskChance(choice.risk);
+    if (!Number.isFinite(chance) || chance >= 100) return null;
+    // d100, 1..100. Roll <= chance == success. Lower roll = better.
+    const roll = Math.floor(Math.random() * 100) + 1;
+    const success = roll <= chance;
+    // Margin describes how decisively it landed, for flavor + model guidance.
+    let degree;
+    if (roll === 1) degree = 'crit-success';
+    else if (roll === 100) degree = 'crit-fail';
+    else if (success) degree = (chance - roll) >= 30 ? 'strong-success' : 'success';
+    else degree = (roll - chance) >= 30 ? 'strong-fail' : 'fail';
+    return { roll, chance, success, degree, risk: choice.risk };
+}
+
+// Build the OOC line that tells the main model how the attempt resolved, so
+// the next reply honors the dice instead of always granting the action.
+function ccBuildRollOoc(choice, result) {
+    const outcome = result.success
+        ? t('cc.roll.ooc.success')
+        : t('cc.roll.ooc.fail');
+    const degreeTxt = t('cc.roll.degree.' + result.degree);
+    // The action label is LLM-generated. It's inserted into the textarea (the
+    // player reviews it before sending), but strip brackets so it can't close
+    // the surrounding [OOC: ...] wrapper, plus control chars / fences.
+    const safeAction = String(choice.name || '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/[[\]]/g, '')
+        .trim()
+        .slice(0, CC_MAX_NAME);
+    return `[OOC: ${t('cc.roll.ooc.attempt', { action: safeAction })} ` +
+        `d100=${result.roll} vs ${result.chance}% → ${outcome} (${degreeTxt}). ` +
+        `${t('cc.roll.ooc.instruct')}]`;
+}
+
+function ccApplyUserChoice(choice, { suppressSend = false, extra = '' } = {}) {
     const s = ccGetSettings();
     const $textarea = $('#send_textarea');
     if (!$textarea.length) return;
 
+    // Build the insertion. With ccSendDescription on, the model receives both
+    // the action label AND its intended tone/consequence, so it can't lose the
+    // nuance the player picked. Otherwise fall back to the bare label.
+    let insertion = choice.name;
+    if (s.ccSendDescription && choice.description) {
+        insertion = `${choice.name} — ${choice.description}`;
+    }
+    if (extra) insertion += (insertion ? ' ' : '') + extra;
+
     const current = $textarea.val() || '';
-    const insertion = choice.name;
     // If textarea is empty: just set it. Otherwise append with a separating space.
     const sep = current.length === 0 || /\s$/.test(current) ? '' : ' ';
     $textarea.val(current + sep + insertion);
@@ -2628,9 +2813,47 @@ function ccToggleWrap($wrap, force) {
 
 function ccBindCardEvents() {
     // Delegated so it survives re-renders.
-    $(document).off('click.sf-cc keydown.sf-cc click.sf-cc-close click.sf-cc-regen click.sf-cc-header keydown.sf-cc-header click.sf-cc-genchar');
+    $(document).off('click.sf-cc keydown.sf-cc click.sf-cc-close click.sf-cc-regen click.sf-cc-header keydown.sf-cc-header click.sf-cc-genchar click.sf-cc-roll');
+
+    // Dice roll button. Must run before (and instead of) the card click so a
+    // roll never accidentally also inserts the plain action.
+    $(document).on('click.sf-cc-roll', '.sf-cc-roll', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $card = $(this).closest('.sf-cc-card');
+        const $wrap = $card.closest('.sf-cc-wrap');
+        const side = $card.attr('data-cc-side') || 'user';
+        const list = side === 'char'
+            ? ($wrap.data('cc-char') || [])
+            : ($wrap.data('cc-user') || []);
+        const idx = parseInt($card.attr('data-cc-idx'), 10);
+        const choice = Array.isArray(list) ? list[idx] : null;
+        if (!choice) return;
+
+        const result = ccRollChoice(choice);
+        if (!result) return;
+
+        // Visual feedback on the card.
+        $card.removeClass('sf-cc-rolled-success sf-cc-rolled-fail')
+            .addClass(result.success ? 'sf-cc-rolled-success' : 'sf-cc-rolled-fail')
+            .addClass('sf-cc-used');
+
+        // Insert the action + the OOC roll outcome into the send bar. Never
+        // auto-sends: the player edits/confirms before the model replies.
+        const ooc = ccBuildRollOoc(choice, result);
+        ccApplyUserChoice(choice, { suppressSend: true, extra: ooc });
+
+        toastr.info(
+            t(result.success ? 'cc.roll.toast.success' : 'cc.roll.toast.fail',
+                { roll: result.roll, chance: result.chance }),
+            t('app'),
+            { timeOut: 3000 }
+        );
+    });
 
     $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
+        // Clicks on the in-card Roll button are handled separately.
+        if ($(e.target).closest('.sf-cc-roll').length) return;
         e.preventDefault();
         const $card = $(this);
         const $wrap = $card.closest('.sf-cc-wrap');
@@ -2983,6 +3206,36 @@ function ccAddSettingsPanel() {
                             <option value="send" ${s.ccClickAction === 'send' ? 'selected' : ''}>${tHtml('cc.clickAction.send')}</option>
                         </select>
                     </div>
+
+                    <div class="sf-cc-subhead"><i class="fa-solid fa-dice-d20"></i> ${tHtml('cc.mech.title')}</div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-senddesc" ${s.ccSendDescription ? 'checked' : ''}>
+                        <label for="sf-cc-senddesc">${tHtml('cc.mech.sendDesc')}</label>
+                    </div>
+                    <div class="sf-qi-info sf-qi-sub">${tHtml('cc.mech.sendDesc.hint')}</div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-showtags" ${s.ccShowTags ? 'checked' : ''}>
+                        <label for="sf-cc-showtags">${tHtml('cc.mech.showTags')}</label>
+                    </div>
+                    <div class="sf-qi-option-row">
+                        <input type="checkbox" id="sf-cc-dice" ${s.ccDice ? 'checked' : ''}>
+                        <label for="sf-cc-dice">${tHtml('cc.mech.dice')}</label>
+                    </div>
+                    <div class="sf-cc-dice-block" style="${s.ccDice ? '' : 'display:none'}">
+                        <div class="sf-qi-info sf-qi-sub">${tHtml('cc.mech.dice.hint')}</div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-chance-low">${tHtml('cc.mech.chanceLow')}</label>
+                            <input type="number" id="sf-cc-chance-low" min="0" max="100" value="${s.ccChanceLow}">
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-chance-medium">${tHtml('cc.mech.chanceMedium')}</label>
+                            <input type="number" id="sf-cc-chance-medium" min="0" max="100" value="${s.ccChanceMedium}">
+                        </div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-chance-high">${tHtml('cc.mech.chanceHigh')}</label>
+                            <input type="number" id="sf-cc-chance-high" min="0" max="100" value="${s.ccChanceHigh}">
+                        </div>
+                    </div>
                     <div class="sf-cc-form-row">
                         <label for="sf-cc-duomode">${tHtml('cc.duoMode')}</label>
                         <select id="sf-cc-duomode">
@@ -3076,6 +3329,32 @@ function ccAddSettingsPanel() {
     });
     panel.on('change', '#sf-cc-clickaction', function () {
         ccGetSettings().ccClickAction = $(this).val();
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-senddesc', function () {
+        ccGetSettings().ccSendDescription = $(this).prop('checked');
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-showtags', function () {
+        ccGetSettings().ccShowTags = $(this).prop('checked');
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-dice', function () {
+        const on = $(this).prop('checked');
+        ccGetSettings().ccDice = on;
+        saveSettings();
+        panel.find('.sf-cc-dice-block').toggle(on);
+    });
+    panel.on('input', '#sf-cc-chance-low', function () {
+        ccGetSettings().ccChanceLow = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 100);
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-chance-medium', function () {
+        ccGetSettings().ccChanceMedium = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 100);
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-chance-high', function () {
+        ccGetSettings().ccChanceHigh = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 100);
         saveSettings();
     });
     panel.on('change', '#sf-cc-duomode', function () {
