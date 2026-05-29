@@ -1417,13 +1417,15 @@ function bindReminders() {
         $('#sf-body-reminders').html(buildRemindersHtml());
     };
 
-    // Add folder
-    $('#sf-add-folder-btn').off('click').on('click', () => {
+    $body.off(NS);
+
+    // Add folder. Delegated on the stable #sf-body-reminders container so it
+    // keeps working after rerender() replaces the inner HTML (a direct handler
+    // on the button would be lost when the button node is recreated).
+    $body.on('click' + NS, '#sf-add-folder-btn', () => {
         addReminderFolder(t('rem.newFolderName'));
         rerender();
     });
-
-    $body.off(NS);
 
     // Folder name rename
     $body.on('change' + NS, '.sf-folder-name', function () {
