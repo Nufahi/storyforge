@@ -407,7 +407,11 @@
     flex-direction: row !important;
     flex-wrap: wrap !important;
     gap: 5px !important;
-    padding: 4px 6px 2px !important;
+    /* Tight top padding so the bar visually attaches to whatever sits above
+       it (notably the Choice Cards wrap), instead of looking like a panel
+       from a different extension. */
+    padding: 1px 6px 2px !important;
+    margin-top: 0 !important;
     align-items: center !important;
     justify-content: center !important;
     background: transparent !important;
@@ -661,9 +665,9 @@
     width: 100%;
     max-width: 100%;
     /* Tight margins so the wrap visually attaches to the message bubble
-       above. Bottom gets a small breathing room to separate it from the
-       next message. */
-    margin: 2px 0 6px 0;
+       above and to the Quick Inserts bar / send form below — should feel
+       like one continuous zone, not a detached panel. */
+    margin: 2px 0 2px 0;
     padding: 10px 12px;
     clear: both;
     float: none;
@@ -1582,7 +1586,9 @@
            content-sized. */
         width: calc(100% - 4px) !important;
         max-width: calc(100% - 4px) !important;
-        margin: 4px 2px 10px 2px;
+        /* Match desktop: tight bottom margin so the Quick Inserts bar that
+           sits in #send_form right below feels like one continuous block. */
+        margin: 4px 2px 3px 2px;
         padding: 8px 10px;
         --sf-cc-radius: 8px;
         flex: 0 0 auto;
@@ -1681,6 +1687,42 @@
         padding: 12px 12px;
         gap: 10px;
         min-height: 48px;          /* iOS tap target guideline */
+        /* Allow the roll button to drop to a new line under the card body
+           on narrow screens instead of being squashed off-screen by
+           overflow:hidden. Without wrap, .sf-cc-roll competed with the
+           card body for horizontal space and effectively disappeared on
+           mobile. */
+        flex-wrap: wrap;
+    }
+    /* Keep the card body next to the index circle on the first row (so
+       the number stays inline with the title), but allow it to shrink so
+       the roll button can wrap onto its own second row. Badges (axis/risk)
+       live inside the body and reappear automatically. */
+    .sf-cc-card .sf-cc-card-body {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    /* Make sure badges are actually visible on mobile (some themes shrink
+       inline-flex children to 0 inside overflow:hidden parents). */
+    .sf-cc-card .sf-cc-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+    }
+    .sf-cc-card .sf-cc-badge {
+        display: inline-flex !important;
+    }
+    /* Roll button: stretch full-width as a clear secondary action under
+       the body on phones. Easier tap target, no horizontal clipping. */
+    .sf-cc-card .sf-cc-roll {
+        flex: 1 1 100%;
+        align-self: stretch;
+        justify-content: center;
+        margin-top: 4px !important;
+        min-height: 36px;
+        padding: 8px 12px !important;
+        font-size: calc(var(--mainFontSize, 14px) * 0.82) !important;
     }
     .sf-cc-card-index {
         flex: 0 0 24px;
