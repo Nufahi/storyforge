@@ -2336,6 +2336,13 @@ function ccBuildCardsHtml(choices, side, revealMode) {
                    <span>${escapeHtml(t('cc.roll.btn'))}</span>
                </button>`
             : '';
+        // Footer row holds badges (axis/risk) + roll button side by side so
+        // they read as one "meta" line under the description. On desktop the
+        // roll button stays visually distinct via .sf-cc-roll styling; on
+        // mobile (no hover) this is the only place the user ever sees them.
+        const footer = (badges || rollBtn)
+            ? `<div class="sf-cc-card-footer">${badges}${rollBtn}</div>`
+            : '';
         return `
         <div class="sf-cc-card${c.risk ? ' sf-cc-card-risk-' + c.risk : ''}" data-cc-idx="${idx}" data-cc-side="${safeSide}" tabindex="0" role="button"${titleAttr}>
             <div class="sf-cc-card-index">${idx + 1}</div>
@@ -2344,9 +2351,8 @@ function ccBuildCardsHtml(choices, side, revealMode) {
                 ${desc && revealMode !== 'tooltip'
                     ? `<div class="sf-cc-card-desc">${desc}</div>`
                     : ''}
-                ${badges}
+                ${footer}
             </div>
-            ${rollBtn}
         </div>`;
     }).join('');
 }
