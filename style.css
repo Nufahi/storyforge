@@ -1037,9 +1037,9 @@
 }
 
 /* === Reveal: hover ===
-   In hover mode the description AND the meta footer (badges + roll button)
-   are hidden until the user hovers/focuses the card. Keeps the resting
-   state minimal — name + index circle only. */
+   Hide description AND meta footer (badges + roll) until hover/focus on
+   pointer devices. On touch the mobile media query below forces them
+   visible because :hover is unreliable on touch. */
 .sf-cc-reveal-hover .sf-cc-card-desc,
 .sf-cc-reveal-hover .sf-cc-card-footer {
     max-height: 0;
@@ -1749,12 +1749,29 @@
        'tooltip' mode still get a title attribute. */
     .sf-cc-reveal-hover .sf-cc-card-desc,
     .sf-cc-reveal-hover .sf-cc-card-footer {
-        max-height: 400px;
-        margin-top: 5px;
-        opacity: 1;
-        overflow: visible;
+        max-height: 400px !important;
+        margin-top: 5px !important;
+        opacity: 1 !important;
+        overflow: visible !important;
     }
 
+}
+
+/* === Touch-device override (independent of viewport width) ===
+   Some phones report widths > 600px in landscape or with desktop-mode
+   user agent strings. The (hover: none) media query catches the actual
+   touch capability regardless of viewport size. Same intent as the
+   max-width 600px block above: never leave the meta footer invisible
+   on a device that can't hover. */
+@media (hover: none) {
+    .sf-cc-reveal-hover .sf-cc-card-desc,
+    .sf-cc-reveal-hover .sf-cc-card-footer {
+        max-height: 400px !important;
+        margin-top: 5px !important;
+        opacity: 1 !important;
+        overflow: visible !important;
+    }
+    .sf-cc-card-footer { display: flex !important; }
 }
 
 /* ============================================================
