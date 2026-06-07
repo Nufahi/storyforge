@@ -1746,32 +1746,69 @@
 
     /* On touch screens hover-to-reveal is unreliable; show descriptions
        AND the badges/roll footer inline. Users who explicitly picked
-       'tooltip' mode still get a title attribute. */
+       'tooltip' mode still get a title attribute.
+       transition:none is critical: after a regen the freshly inserted
+       footer was inheriting the desktop hover transition and animating
+       from opacity:0/max-height:0, then sometimes settling there because
+       no :hover ever fires on touch. Killing the transition makes the
+       final !important values take effect instantly. */
+    .sf-cc-wrap .sf-cc-reveal-hover .sf-cc-card-desc,
+    .sf-cc-wrap .sf-cc-reveal-hover .sf-cc-card-footer,
     .sf-cc-reveal-hover .sf-cc-card-desc,
     .sf-cc-reveal-hover .sf-cc-card-footer {
-        max-height: 400px !important;
+        max-height: none !important;
         margin-top: 5px !important;
         opacity: 1 !important;
         overflow: visible !important;
+        transition: none !important;
+    }
+    .sf-cc-wrap .sf-cc-card .sf-cc-roll,
+    .sf-cc-card .sf-cc-roll {
+        display: inline-flex !important;
     }
 
 }
 
 /* === Touch-device override (independent of viewport width) ===
    Some phones report widths > 600px in landscape or with desktop-mode
-   user agent strings. The (hover: none) media query catches the actual
-   touch capability regardless of viewport size. Same intent as the
-   max-width 600px block above: never leave the meta footer invisible
-   on a device that can't hover. */
-@media (hover: none) {
+   user agent strings. We trigger on THREE independent signals so any
+   one of them firing is enough — Android WebViews and embedded browsers
+   are inconsistent about which feature query they expose:
+     (hover: none)     — pointer doesn't support hover
+     (pointer: coarse) — primary input is a finger
+     (any-pointer: coarse) — at least one input is touch (covers stylus + finger combos)
+   Same intent as the max-width 600px block above: never leave the meta
+   footer invisible on a device that can't hover. The kill-switch also
+   nukes the transition entirely so the footer can never get "stuck" mid
+   animation after a regen (DOM is freshly mounted, transitions on
+   opacity/max-height occasionally interpolate from initial state of 0
+   instead of snapping to the final !important value).
+
+   Specificity bumped via .sf-cc-wrap prefix so these always beat any
+   per-card hover state from desktop CSS that might still be in cache. */
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+    .sf-cc-wrap .sf-cc-reveal-hover .sf-cc-card-desc,
+    .sf-cc-wrap .sf-cc-reveal-hover .sf-cc-card-footer,
     .sf-cc-reveal-hover .sf-cc-card-desc,
     .sf-cc-reveal-hover .sf-cc-card-footer {
-        max-height: 400px !important;
+        max-height: none !important;
         margin-top: 5px !important;
         opacity: 1 !important;
         overflow: visible !important;
+        transition: none !important;
     }
-    .sf-cc-card-footer { display: flex !important; }
+    .sf-cc-wrap .sf-cc-card-footer,
+    .sf-cc-card-footer {
+        display: flex !important;
+    }
+    .sf-cc-wrap .sf-cc-card .sf-cc-badge,
+    .sf-cc-card .sf-cc-badge {
+        display: inline-flex !important;
+    }
+    .sf-cc-wrap .sf-cc-card .sf-cc-roll,
+    .sf-cc-card .sf-cc-roll {
+        display: inline-flex !important;
+    }
 }
 
 /* ============================================================
