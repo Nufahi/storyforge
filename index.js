@@ -1672,6 +1672,34 @@ function ccGetSettings() {
     return s;
 }
 
+// Touch-device detection. Computed once on first call and cached for the
+// rest of the page lifetime. We use multiple signals because every Android
+// WebView and embedded browser lies about a different one:
+//   - 'ontouchstart' on window: oldest reliable touch indicator
+//   - navigator.maxTouchPoints: modern HTML5 standard
+//   - matchMedia('(pointer: coarse)'): CSS-level coarse pointer
+//   - matchMedia('(hover: none)'): no hover capability
+// If ANY of these say "touch", we treat it as touch. This is the device
+// equivalent of "innocent until proven guilty" — better to over-show the
+// meta footer on a desktop with a touchscreen than to leave it invisible
+// on a phone (which is what users were hitting after a regen).
+let _ccTouchCached = null;
+function ccIsTouchDevice() {
+    if (_ccTouchCached !== null) return _ccTouchCached;
+    let touch = false;
+    try {
+        if ('ontouchstart' in window) touch = true;
+        else if (typeof navigator !== 'undefined' && (navigator.maxTouchPoints || 0) > 0) touch = true;
+        else if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+            if (window.matchMedia('(pointer: coarse)').matches) touch = true;
+            else if (window.matchMedia('(hover: none)').matches) touch = true;
+            else if (window.matchMedia('(any-pointer: coarse)').matches) touch = true;
+        }
+    } catch { /* defensive: never throw from a detector */ }
+    _ccTouchCached = touch;
+    return touch;
+}
+
 // Map a normalized risk tier to its configured success chance (percent).
 function ccRiskChance(risk) {
     const s = ccGetSettings();
@@ -1763,15 +1791,37 @@ function ccSubstCount(template, count) {
     return String(template).replace(/\{\{count\}\}/g, String(count));
 }
 
+// If a user has a saved custom prompt from before risk/axis tags existed
+// (or wrote their own without them), the model returns plain {name,description}
+// entries — which means no badges and no roll button render in the cards.
+// This silently appends the tag instruction + an extended JSON example so
+// older custom prompts keep working without the user having to edit them.
+// Detection is intentionally loose: any mention of both "risk" and "axis"
+// (case-insensitive) inside the template is treated as "already covered".
+function ccEnsureTagsInPrompt(tpl, kind) {
+    const lower = String(tpl).toLowerCase();
+    if (lower.includes('"risk"') && lower.includes('"axis"')) return tpl;
+    if (lower.includes('risk') && lower.includes('axis')) return tpl;
+    const subject = kind === 'char' ? '{{char}}' : '{{user}}';
+    const append = '\n\n' + CC_TAGS_INSTRUCTION +
+        'Return ONLY a JSON code block in this exact shape, with no commentary before or after:\n' +
+        '```json\n' +
+        `{"choices":[{"name":"Verb-led label","description":"What ${subject} does, tone, consequence.","risk":"safe|low|medium|high","axis":"cooperate|confront|probe|act|shift|disrupt"}]}\n` +
+        '```';
+    return tpl + append;
+}
+
 function ccBuildPromptTemplate(count) {
     const s = ccGetSettings();
-    const tpl = (s.ccCustomPrompt && s.ccCustomPrompt.trim()) || CC_DEFAULT_USER_PROMPT;
+    const custom = (s.ccCustomPrompt && s.ccCustomPrompt.trim());
+    const tpl = custom ? ccEnsureTagsInPrompt(custom, 'user') : CC_DEFAULT_USER_PROMPT;
     return ccSubstCount(tpl, count);
 }
 
 function ccBuildCharPromptTemplate(count) {
     const s = ccGetSettings();
-    const tpl = (s.ccCustomCharPrompt && s.ccCustomCharPrompt.trim()) || CC_DEFAULT_CHAR_PROMPT;
+    const custom = (s.ccCustomCharPrompt && s.ccCustomCharPrompt.trim());
+    const tpl = custom ? ccEnsureTagsInPrompt(custom, 'char') : CC_DEFAULT_CHAR_PROMPT;
     return ccSubstCount(tpl, count);
 }
 
@@ -1876,7 +1926,39 @@ function ccNormalizeAxis(value) {
     return '';
 }
 
+// Heuristic axis guesser used when the model didn't return one. Looks at the
+// option's verb + description for keywords that map to one of the 6 axes.
+// Falls back to 'act' (concrete physical action) which is the most neutral.
+function ccGuessAxisFromText(text) {
+    const v = String(text || '').toLowerCase();
+    if (!v) return 'act';
+    if (/\b(kiss|hug|comfort|reassur|embrace|share|trust|ally|help|join|agree|accept|smile|laugh|thank)/.test(v)) return 'cooperate';
+    if (/\b(refus|reject|argu|fight|challeng|accuse|threat|attack|punch|hit|shout|yell|confront|deny|push back|defy)/.test(v)) return 'confront';
+    if (/\b(ask|question|inquir|investigat|examin|inspect|look|search|study|read|listen|wonder|why|how|what|who)/.test(v)) return 'probe';
+    if (/\b(grab|take|move|run|walk|leave|go|jump|climb|open|close|push|pull|throw|punch|attack|act|stand|sit)/.test(v)) return 'act';
+    if (/\b(joke|tease|seduc|flirt|whisper|laugh|cry|sob|tremble|sigh|smirk|wink|blush|tone|mood|gentl|tender)/.test(v)) return 'shift';
+    if (/\b(reveal|confess|admit|secret|surpris|sudden|wild|gamble|bet|risk|crazy|insane|chaos|disrupt)/.test(v)) return 'disrupt';
+    return 'act';
+}
+
+// Heuristic risk guesser. Looks for tells of stake/danger in the text and
+// otherwise returns 'medium' as a sensible default. Always returns a valid
+// tier so the dice button can render even when the model omitted "risk".
+function ccGuessRiskFromText(text) {
+    const v = String(text || '').toLowerCase();
+    if (!v) return 'medium';
+    if (/\b(attack|kill|stab|shoot|kiss|seduc|confess|reveal|gamble|bet|jump|leap|risk|dare|dangerous|reckless|insane|chaos|betray|fight|punch|escape|flee)/.test(v)) return 'high';
+    if (/\b(challeng|argu|push|threat|tease|provoke|interrupt|object|disagree|question|probe|investigate|sneak|whisper)/.test(v)) return 'medium';
+    if (/\b(ask|listen|nod|smile|agree|wait|observe|look|consider|think|reply|answer|greet|introduce)/.test(v)) return 'low';
+    if (/\b(stay|stand|sit|nothing|quiet|silent|breathe|relax|rest)/.test(v)) return 'safe';
+    return 'medium';
+}
+
 // Take a raw array-of-objects and produce {name, description, risk, axis} entries.
+// risk/axis are ALWAYS filled (model value -> normalize -> guess from text ->
+// safe default). The UI relies on these being populated to render badges and
+// the dice button; missing values used to silently hide both, which read as
+// a bug to users on small/cheap models that ignore the tag instruction.
 function ccCleanChoiceArray(list) {
     if (!Array.isArray(list)) return [];
     const cleaned = [];
@@ -1891,8 +1973,11 @@ function ccCleanChoiceArray(list) {
             : typeof item.detail === 'string'
             ? item.detail.trim().slice(0, CC_MAX_DESC)
             : '';
-        const risk = ccNormalizeRisk(item.risk ?? item.risk_level ?? item.danger);
-        const axis = ccNormalizeAxis(item.axis ?? item.type ?? item.category);
+        const combinedText = name + ' ' + description;
+        let risk = ccNormalizeRisk(item.risk ?? item.risk_level ?? item.danger);
+        if (!risk) risk = ccGuessRiskFromText(combinedText);
+        let axis = ccNormalizeAxis(item.axis ?? item.type ?? item.category);
+        if (!axis) axis = ccGuessAxisFromText(combinedText);
         cleaned.push({ name, description, risk, axis });
         if (cleaned.length >= 6) break;
     }
@@ -2411,6 +2496,14 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
     }
 
     const collapsedClass = s.ccCollapsed ? ' sf-cc-collapsed' : '';
+    // Touch class is added unconditionally on any device whose primary input
+    // is a finger. We use a JS check because @media (hover: none) /
+    // (pointer: coarse) is unreliable in some Android WebViews and inside
+    // SillyTavern's mobile shell — the same context where users complain
+    // that badges + roll never appear after regen. With this class we
+    // can force-show the meta footer from CSS by class, no media query
+    // dependency.
+    const touchClass = ccIsTouchDevice() ? ' sf-cc-touch' : '';
     const totalCount = userChoices.length + charChoices.length;
     const durationStr = Number.isFinite(elapsedMs) ? ccFormatDuration(elapsedMs) : '';
     const durationBadge = durationStr
@@ -2420,7 +2513,7 @@ function ccRenderCards(choicesOrDuo, messageId, elapsedMs) {
         : '';
 
     const wrap = $(`
-        <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}${collapsedClass}"
+        <div class="sf-cc-wrap sf-cc-style-${escapeHtml(s.ccStyle)} sf-cc-reveal-${escapeHtml(s.ccReveal)}${collapsedClass}${touchClass}"
              data-cc-message-id="${escapeHtml(String(messageId ?? ''))}">
             <div class="sf-cc-header" role="button" tabindex="0" aria-expanded="${s.ccCollapsed ? 'false' : 'true'}">
                 <i class="fa-solid fa-chevron-right sf-cc-chevron"></i>

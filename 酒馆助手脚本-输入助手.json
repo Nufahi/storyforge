@@ -1,0 +1,125 @@
+{
+  "type": "script",
+  "enabled": true,
+  "name": "输入助手",
+  "id": "3edbc7ed-f8f1-4809-b0fc-8acc8ad05749",
+  "content": "import 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/酒馆助手/输入助手/index.js'",
+  "info": "# 输入助手\n\n- **作者:** 司马咩咩, 青空莉想做舞台少女的狗\n- **版本:** 2025/08/30\n- **源文件:** [点此跳转](https://github.com/StageDog/tavern_resource/tree/main/src)\n\n方便在输入框指定位置输入引号、括号或自定义内容, 并指定输入后光标位置.\n\n输入助手会在你所选定的输入框中操作, 如果没有选定, 则会使用酒馆用户输入框.\n\n配置绑定在脚本上, 因此你甚至可以为不同角色卡单独设置脚本, 从而设置不同的配置.\n",
+  "button": {
+    "enabled": true,
+    "buttons": [
+      {
+        "name": "**",
+        "visible": true
+      },
+      {
+        "name": "(in)",
+        "visible": true
+      },
+      {
+        "name": "\"\"",
+        "visible": true
+      },
+      {
+        "name": "''",
+        "visible": true
+      },
+      {
+        "name": "[]",
+        "visible": true
+      },
+      {
+        "name": "()",
+        "visible": true
+      },
+      {
+        "name": "ООС",
+        "visible": true
+      },
+      {
+        "name": "16:9",
+        "visible": true
+      },
+      {
+        "name": "****",
+        "visible": true
+      }
+    ]
+  },
+  "data": {
+    "buttons": [
+      {
+        "name": "**",
+        "enable": true,
+        "description": "Действие",
+        "content": "**",
+        "cursor_position": 1,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "(in)",
+        "enable": true,
+        "description": "Мысли",
+        "content": "(in)",
+        "cursor_position": 4,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "\"\"",
+        "enable": true,
+        "description": "Цитата",
+        "content": "\"\"",
+        "cursor_position": 1,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "''",
+        "enable": true,
+        "description": "双引号之间",
+        "content": "''",
+        "cursor_position": 1,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "[]",
+        "enable": true,
+        "description": "直角单开引号之间",
+        "content": "[]",
+        "cursor_position": 1,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "()",
+        "enable": true,
+        "description": "圆括号之间",
+        "content": "()",
+        "cursor_position": 1,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "ООС",
+        "enable": true,
+        "description": "换行",
+        "content": "[OOC: No narrative needed, no infoblock, straight up image generation. Start with <div. Change hairstyle and clothes according to the ooc.",
+        "cursor_position": 138,
+        "insert_position": "append"
+      },
+      {
+        "name": "16:9",
+        "enable": true,
+        "description": "Разделитель",
+        "content": "Придумай им одежду, которая бы подходила под описание промпта. 16:9",
+        "cursor_position": 67,
+        "insert_position": "as_is"
+      },
+      {
+        "name": "****",
+        "enable": true,
+        "description": "",
+        "content": "******",
+        "cursor_position": 3,
+        "insert_position": "as_is"
+      }
+    ]
+  }
+}

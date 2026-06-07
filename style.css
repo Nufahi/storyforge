@@ -1069,6 +1069,30 @@
     margin-top: 8px;
 }
 
+/* === Touch-device forced reveal (JS-applied class) ===
+   When ccIsTouchDevice() returns true at render time, the wrap gets the
+   .sf-cc-touch class. We bypass the @media (hover:none) / (pointer:coarse)
+   queries entirely here because Android WebViews and SillyTavern's mobile
+   shell don't always honor them, especially after a regen where the DOM
+   is freshly inserted and transitions can stick at the initial hidden
+   state. With a class-based override we're independent of every browser
+   quirk: the rule applies the moment the element is in the DOM.
+
+   transition:none is critical — without it the footer animates from
+   opacity:0/max-height:0 (inherited from .sf-cc-reveal-hover above) and
+   can settle there because no :hover ever fires on touch. */
+.sf-cc-wrap.sf-cc-touch .sf-cc-card-desc,
+.sf-cc-wrap.sf-cc-touch .sf-cc-card-footer {
+    max-height: none !important;
+    margin-top: 6px !important;
+    opacity: 1 !important;
+    overflow: visible !important;
+    transition: none !important;
+}
+.sf-cc-wrap.sf-cc-touch .sf-cc-card-footer { display: flex !important; }
+.sf-cc-wrap.sf-cc-touch .sf-cc-badge { display: inline-flex !important; }
+.sf-cc-wrap.sf-cc-touch .sf-cc-roll { display: inline-flex !important; }
+
 /* === Tag badges (axis + risk) === */
 .sf-cc-badges {
     display: flex;
