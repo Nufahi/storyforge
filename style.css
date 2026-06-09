@@ -357,6 +357,113 @@
 }
 .sf-reminder-opts input[type="number"] { width: 50px; }
 
+/* === Director Mode === */
+.sf-dm-intro {
+    font-size: 11px; line-height: 1.45;
+    color: var(--SmartThemeQuoteColor, #999);
+    margin-bottom: 10px;
+}
+.sf-dm-main {
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 10px; padding: 10px 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    display: flex; flex-direction: column; gap: 2px;
+}
+.sf-dm-status {
+    margin-left: auto;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--SmartThemeQuoteColor, #999);
+    padding: 2px 6px; border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+    white-space: nowrap; max-width: 50%;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.sf-dm-on-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #5cb85c; margin-left: 6px;
+    box-shadow: 0 0 6px rgba(92,184,92,.8);
+}
+.sf-dm-slider-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px; font-size: 13px;
+}
+.sf-dm-slider-row input[type="range"] {
+    flex: 1; min-width: 0;
+    accent-color: var(--SmartThemeQuoteColor, #c9a227);
+    /* Comfortable thumb hit-target on touch screens. */
+    height: 24px; cursor: pointer;
+}
+.sf-dm-intensity-val {
+    flex: 0 0 auto; width: 42px; text-align: right;
+    font-size: 12px; font-weight: 600;
+    color: var(--SmartThemeQuoteColor, #c9a227);
+    font-variant-numeric: tabular-nums;
+}
+.sf-dm-fire-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 6px; font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc); transition: all .15s;
+}
+.sf-dm-fire-btn:hover {
+    background: rgba(201,162,39,.12);
+    border-color: rgba(201,162,39,.5);
+    color: var(--SmartThemeQuoteColor, #c9a227);
+}
+.sf-dm-tools-label {
+    margin: 12px 0 6px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--SmartThemeQuoteColor, #999);
+}
+.sf-dm-tools { display: flex; flex-direction: column; gap: 6px; }
+.sf-dm-tool-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 6px 10px; border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    font-size: 12px;
+}
+.sf-dm-tool-row input[type="checkbox"] { flex: 0 0 auto; cursor: pointer; }
+.sf-dm-tool-name {
+    flex: 1 1 120px; min-width: 0; display: flex; align-items: center; gap: 6px;
+    font-weight: 600; color: var(--SmartThemeBodyColor, #ccc);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sf-dm-tool-name i { width: 14px; text-align: center; color: var(--SmartThemeQuoteColor, #999); font-size: 11px; flex-shrink: 0; }
+.sf-dm-cd-left {
+    display: inline-flex; align-items: center; gap: 2px;
+    font-size: 10px; color: var(--SmartThemeQuoteColor, #999); margin-left: 4px;
+}
+.sf-dm-cd-left i { font-size: 9px; width: auto; }
+.sf-dm-tool-opt {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);
+    flex: 0 0 auto;
+}
+.sf-dm-tool-opt input[type="number"] {
+    width: 46px; padding: 3px 6px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+/* Director-queued tag in the floating badge gets a subtle gold tint so the
+   player can tell director events from their own manual injections. */
+.storyforge-active-tag.sf-dm-tag {
+    border: 1px solid rgba(201,162,39,.35);
+    background: rgba(201,162,39,.08);
+}
+
+/* Mobile: stack tool-row controls in two comfortable lines, keep number
+   inputs big enough to tap. */
+@media (max-width: 600px) {
+    .sf-dm-tool-row { gap: 6px 10px; }
+    .sf-dm-tool-name { flex: 1 1 100%; }
+    .sf-dm-tool-opt input[type="number"] { width: 54px; padding: 5px 6px; }
+    .sf-dm-status { max-width: 45%; }
+}
+
 /* === Active badge === */
 .storyforge-active-badge {
     position: fixed; bottom: 80px; right: 20px; z-index: 9999;

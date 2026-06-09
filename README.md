@@ -55,6 +55,22 @@ Reminders are global (shared across chats); the every-N cycle resets when you sw
 
 ---
 
+## Director Mode (autonomous co-narrator)
+
+Turn it on and the story starts living its own life. After each AI reply the director rolls a d100 against the **Intensity** slider (0–100%). On success it secretly queues one weighted-random story tool for the next response — a plot twist, a new NPC, a raised stake.
+
+- **Intensity** — how often events happen (slider, 0–100% chance per eligible reply)
+- **Min gap** — guaranteed quiet replies after each event, so the pacing breathes
+- **Per-tool weight (1–10)** — how often each tool is picked
+- **Per-tool cooldown** — replies before the same tool can fire again (Time Skip won't spam)
+- **Surprise mode** — hide *which* tool was queued; the badge just shows `???`
+- **Direct now!** — force an event for the next reply, ignoring the dice
+- Queued events show in the floating badge with a clapperboard icon and can be cancelled with one tap
+
+Slash commands: `/sf-director` (toggle), `/sf-direct` (force an event).
+
+---
+
 ## Installation
 
 ### SillyTavern built-in installer (recommended)

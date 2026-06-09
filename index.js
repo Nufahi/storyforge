@@ -253,6 +253,16 @@ const defaultSettings = Object.freeze({
     reminderFolders: null,      // [{ id, name, collapsed, reminders: [...] }]
     qiBarVisible: true,
     sendBarButton: true,
+    // ==== Director Mode ====
+    // Autonomous co-narrator: after each bot reply the director rolls d100
+    // against a chance derived from dmIntensity. On success it queues one
+    // random weighted StoryForge tool for the NEXT generation (one-shot).
+    dmEnabled: false,
+    dmIntensity: 4,             // 0-10; chance per eligible reply = intensity * 10%
+    dmMinGap: 3,                // min bot replies between director events
+    dmNotify: true,             // toast when the director queues something
+    dmSecret: false,            // hide WHICH tool was queued (surprise mode)
+    dmTools: null,              // { [toolId]: { enabled, weight (1-10), cooldown (replies) } }
     // ==== Choice Cards ====
     ccEnabled: true,
     ccAuto: false,                      // generate automatically after every bot reply
@@ -397,6 +407,11 @@ function deleteTool(toolId) {
     const s = getSettings();
     s.tools = getTools().filter(t => t.id !== toolId);
     clearTool(toolId);
+    // Drop any director state owned by this tool (queued injection, cooldown,
+    // per-tool config) so a deleted tool can't fire posthumously.
+    dmClearQueued(toolId);
+    dmToolCooldowns.delete(toolId);
+    if (s.dmTools) delete s.dmTools[toolId];
     saveSettings();
 }
 
@@ -622,6 +637,168 @@ function resetReminderCounters() {
     for (const { reminder } of getAllReminders()) {
         if (reminder.mode === 'every') clearReminderInjection(reminder.id);
     }
+}
+
+// ==== Director Mode ========================================================
+// Autonomous co-narrator. After each finished bot reply the director rolls a
+// d100 against (intensity * 10)%. On success it queues ONE weighted-random
+// StoryForge tool for the next generation, then respects a global min-gap and
+// a per-tool cooldown so heavy tools (Time Skip...) can't spam the story.
+//
+// Director injections use their own keys (`storyforge_dm_<toolId>`), NOT the
+// manual-tool toggle path. Reason: CHARACTER_MESSAGE_RENDERED (where we roll)
+// fires BEFORE GENERATION_ENDED of the same generation, so anything queued
+// through activeInjections would be wiped immediately by the auto-clear
+// handler. Separate keys give us our own one-shot lifecycle: consumed (and
+// cleared) on the next bot reply, dropped on chat change.
+
+const DM_DEFAULT_WEIGHT = 5;
+const DM_DEFAULT_COOLDOWN = 8;
+// Heavier scene-warping defaults get lower weight / longer cooldown so the
+// director doesn't time-skip every other scene out of the box.
+const DM_TOOL_PRESETS = {
+    time_skip: { weight: 2, cooldown: 20 },
+    scene_shift: { weight: 3, cooldown: 12 },
+    secret_reveal: { weight: 4, cooldown: 10 },
+};
+
+// In-memory pacing state (reset on chat change / reload).
+let dmRepliesSinceEvent = 0;        // bot replies since the director last acted
+const dmToolCooldowns = new Map();  // toolId -> replies remaining on cooldown
+const dmQueuedTools = new Set();    // toolIds queued by the director (one-shot)
+const dmSecretTools = new Set();    // subset queued in surprise mode (badge shows ???)
+
+function getDirectorToolConfig(toolId) {
+    const s = getSettings();
+    if (!s.dmTools || typeof s.dmTools !== 'object') s.dmTools = {};
+    if (!s.dmTools[toolId] || typeof s.dmTools[toolId] !== 'object') {
+        const preset = DM_TOOL_PRESETS[toolId] || {};
+        s.dmTools[toolId] = {
+            enabled: true,
+            weight: preset.weight ?? DM_DEFAULT_WEIGHT,
+            cooldown: preset.cooldown ?? DM_DEFAULT_COOLDOWN,
+        };
+    }
+    return s.dmTools[toolId];
+}
+
+function updateDirectorToolConfig(toolId, data) {
+    const cfg = getDirectorToolConfig(toolId);
+    if (typeof data.enabled === 'boolean') cfg.enabled = data.enabled;
+    if (Number.isFinite(data.weight)) cfg.weight = Math.min(Math.max(Math.floor(data.weight), 1), 10);
+    if (Number.isFinite(data.cooldown)) cfg.cooldown = Math.min(Math.max(Math.floor(data.cooldown), 0), 50);
+    saveSettings();
+}
+
+function dmClearQueued(toolId) {
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_dm_${toolId}`, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM,
+    );
+    dmQueuedTools.delete(toolId);
+    dmSecretTools.delete(toolId);
+    updateBadge();
+}
+
+function dmClearAllQueued() {
+    for (const id of [...dmQueuedTools]) dmClearQueued(id);
+}
+
+function dmResetState() {
+    dmClearAllQueued();
+    dmToolCooldowns.clear();
+    dmRepliesSinceEvent = 0;
+    dmUpdateStatus();
+}
+
+// Pick one tool among eligible candidates, weighted-random. Returns the tool
+// object or null when nothing is eligible.
+function dmPickTool() {
+    const candidates = [];
+    for (const tool of getTools()) {
+        if (!tool.prompt?.trim()) continue;
+        const cfg = getDirectorToolConfig(tool.id);
+        if (!cfg.enabled) continue;
+        if ((dmToolCooldowns.get(tool.id) || 0) > 0) continue;
+        // Don't double up with a manually queued copy of the same tool.
+        if (activeInjections.has(tool.id) || dmQueuedTools.has(tool.id)) continue;
+        candidates.push({ tool, weight: Math.max(1, cfg.weight | 0) });
+    }
+    if (!candidates.length) return null;
+    const total = candidates.reduce((sum, c) => sum + c.weight, 0);
+    let roll = Math.random() * total;
+    for (const c of candidates) {
+        roll -= c.weight;
+        if (roll <= 0) return c.tool;
+    }
+    return candidates[candidates.length - 1].tool;
+}
+
+// Queue a tool as a director one-shot for the NEXT generation.
+function dmQueueTool(tool) {
+    const s = getSettings();
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_dm_${tool.id}`, tool.prompt, POSITION_IN_CHAT, s.depth, true, ROLE_SYSTEM,
+    );
+    dmQueuedTools.add(tool.id);
+    if (s.dmSecret) dmSecretTools.add(tool.id);
+    const cfg = getDirectorToolConfig(tool.id);
+    if ((cfg.cooldown | 0) > 0) dmToolCooldowns.set(tool.id, cfg.cooldown | 0);
+    dmRepliesSinceEvent = 0;
+    updateBadge();
+    dmUpdateStatus();
+    if (s.dmNotify) {
+        const msg = s.dmSecret ? t('dm.queuedSecret') : t('dm.queued', { name: tool.label });
+        toastr.info(msg, t('dm.toastTitle'), { timeOut: 3500, escapeHtml: true });
+    }
+}
+
+// Called once per finished bot reply (CHARACTER_MESSAGE_RENDERED).
+function dmOnBotReply() {
+    // The reply that just rendered consumed any queued director injection —
+    // clear it first so it never leaks into a second generation.
+    dmClearAllQueued();
+    // Cooldowns recover on every bot reply, even while the director is off.
+    for (const [id, left] of [...dmToolCooldowns]) {
+        if (left <= 1) dmToolCooldowns.delete(id);
+        else dmToolCooldowns.set(id, left - 1);
+    }
+    const s = getSettings();
+    if (!s.enabled || !s.dmEnabled) { dmUpdateStatus(); return; }
+    dmRepliesSinceEvent++;
+    if (dmRepliesSinceEvent <= Math.max(0, s.dmMinGap | 0)) { dmUpdateStatus(); return; }
+    const chance = Math.min(100, Math.max(0, (s.dmIntensity | 0) * 10));
+    if (chance <= 0) { dmUpdateStatus(); return; }
+    const roll = Math.floor(Math.random() * 100) + 1;
+    if (roll > chance) { dmUpdateStatus(); return; }
+    const tool = dmPickTool();
+    if (!tool) { dmUpdateStatus(); return; }
+    dmQueueTool(tool);
+}
+
+// Force a director event right now (UI button / slash command). Ignores the
+// min-gap and the intensity roll but still honors per-tool cooldowns.
+function dmFireNow() {
+    const s = getSettings();
+    if (!s.enabled) { toastr.warning(t('common.disabled'), t('app')); return false; }
+    const tool = dmPickTool();
+    if (!tool) { toastr.warning(t('dm.noCandidates'), t('dm.toastTitle')); return false; }
+    dmQueueTool(tool);
+    return true;
+}
+
+function dmStatusText() {
+    const s = getSettings();
+    if (!s.enabled || !s.dmEnabled) return t('dm.status.off');
+    if (dmQueuedTools.size) return t('dm.status.queued');
+    const gap = Math.max(0, s.dmMinGap | 0) - dmRepliesSinceEvent;
+    if (gap > 0) return t('dm.status.calm', { n: gap });
+    return t('dm.status.watching', { chance: Math.min(100, Math.max(0, (s.dmIntensity | 0) * 10)) });
+}
+
+// Refresh the live status line inside the open popup. No-op when closed.
+function dmUpdateStatus() {
+    const el = $('#sf-dm-status');
+    if (el.length) el.text(dmStatusText());
 }
 
 // Track the last focused editable textarea/input so quick inserts can target
@@ -1093,24 +1270,38 @@ function addQuickInsertSettingsPanel() {
 
 function updateBadge() {
     $('#storyforge-active-badge').remove();
-    if (activeInjections.size === 0) return;
+    if (activeInjections.size === 0 && dmQueuedTools.size === 0) return;
     const tools = getTools();
     const tags = [...activeInjections.keys()].map(id => {
         const tool = tools.find(x => x.id === id);
         if (!tool) return '';
         return `<span class="storyforge-active-tag"><i class="${escapeHtml(sanitizeIcon(tool.icon))}" style="font-size:11px"></i> ${escapeHtml(tool.label)} <span class="storyforge-tag-remove fa-solid fa-xmark" data-tool="${escapeHtml(id)}"></span></span>`;
     }).join('');
+    // Director-queued one-shots get a clapperboard icon. In surprise mode the
+    // label is masked so the player doesn't know what's coming.
+    const dmTags = [...dmQueuedTools].map(id => {
+        const tool = tools.find(x => x.id === id);
+        if (!tool) return '';
+        const label = dmSecretTools.has(id) ? t('dm.badgeSecret') : tool.label;
+        return `<span class="storyforge-active-tag sf-dm-tag"><i class="fa-solid fa-clapperboard" style="font-size:11px"></i> ${escapeHtml(label)} <span class="storyforge-tag-remove sf-dm-remove fa-solid fa-xmark" data-tool="${escapeHtml(id)}"></span></span>`;
+    }).join('');
     const badge = $(`<div id="storyforge-active-badge" class="storyforge-active-badge">
         <div class="storyforge-active-badge-header">
             <span><i class="fa-solid fa-bolt" style="font-size:10px"></i> ${escapeHtml(t('tool.popup.activeLabel'))}</span>
             <span class="storyforge-active-badge-clear" id="storyforge_clearall">${escapeHtml(t('tool.popup.clearAll'))}</span>
-        </div>${tags}</div>`);
+        </div>${tags}${dmTags}</div>`);
     $('body').append(badge);
     badge.on('click', '#storyforge_clearall', () => {
         clearAllTools();
+        dmClearAllQueued();
         toastr.info(t('common.cleared'), t('app'));
     });
-    badge.on('click', '.storyforge-tag-remove', function () {
+    badge.on('click', '.sf-dm-remove', function () {
+        dmClearQueued($(this).data('tool'));
+        toastr.info(t('dm.eventCancelled'), t('dm.toastTitle'));
+        dmUpdateStatus();
+    });
+    badge.on('click', '.storyforge-tag-remove:not(.sf-dm-remove)', function () {
         const tid = $(this).data('tool');
         clearTool(tid);
         const all2 = getTools();
@@ -1207,6 +1398,59 @@ function buildRemindersHtml() {
         <div class="storyforge-add-btn" id="sf-add-folder-btn"><i class="fa-solid fa-folder-plus"></i> ${escapeHtml(t('rem.addFolder'))}</div>`;
 }
 
+// Build the Director Mode section HTML (autonomous co-narrator controls).
+function buildDirectorHtml() {
+    const s = getSettings();
+    const intensity = Math.min(10, Math.max(0, s.dmIntensity | 0));
+    const toolRows = getTools().map(tool => {
+        const cfg = getDirectorToolConfig(tool.id);
+        const id = escapeHtml(tool.id);
+        const cdLeft = dmToolCooldowns.get(tool.id) || 0;
+        const cdHint = cdLeft > 0 ? `<span class="sf-dm-cd-left" title="${escapeHtml(t('dm.cooldownLeft', { n: cdLeft }))}"><i class="fa-solid fa-hourglass-half"></i>${cdLeft}</span>` : '';
+        return `<div class="sf-dm-tool-row" data-dmtool="${id}">
+            <input type="checkbox" class="sf-dm-tool-enabled" data-dmtool="${id}" ${cfg.enabled ? 'checked' : ''} title="${escapeHtml(t('dm.toolEnable'))}">
+            <span class="sf-dm-tool-name"><i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i> ${escapeHtml(tool.label)}${cdHint}</span>
+            <label class="sf-dm-tool-opt" title="${escapeHtml(t('dm.weightHint'))}">${escapeHtml(t('dm.weight'))}
+                <input type="number" class="sf-dm-tool-weight" data-dmtool="${id}" min="1" max="10" value="${escapeHtml(String(cfg.weight))}">
+            </label>
+            <label class="sf-dm-tool-opt" title="${escapeHtml(t('dm.cooldownHint'))}">${escapeHtml(t('dm.cooldown'))}
+                <input type="number" class="sf-dm-tool-cooldown" data-dmtool="${id}" min="0" max="50" value="${escapeHtml(String(cfg.cooldown))}">
+            </label>
+        </div>`;
+    }).join('');
+
+    return `<div class="sf-dm-intro">${escapeHtml(t('dm.intro'))}</div>
+        <div class="sf-dm-main">
+            <div class="storyforge-settings-row">
+                <input type="checkbox" id="sf-dm-enabled" ${s.dmEnabled ? 'checked' : ''}>
+                <label for="sf-dm-enabled">${escapeHtml(t('dm.enable'))}</label>
+                <span class="sf-dm-status" id="sf-dm-status">${escapeHtml(dmStatusText())}</span>
+            </div>
+            <div class="sf-dm-slider-row">
+                <label for="sf-dm-intensity">${escapeHtml(t('dm.intensity'))}</label>
+                <input type="range" id="sf-dm-intensity" min="0" max="10" step="1" value="${escapeHtml(String(intensity))}">
+                <span class="sf-dm-intensity-val" id="sf-dm-intensity-val">${escapeHtml(String(intensity * 10))}%</span>
+            </div>
+            <div class="storyforge-settings-row">
+                <label for="sf-dm-mingap" title="${escapeHtml(t('dm.minGapHint'))}">${escapeHtml(t('dm.minGap'))}</label>
+                <input type="number" id="sf-dm-mingap" min="0" max="50" value="${escapeHtml(String(s.dmMinGap))}">
+            </div>
+            <div class="storyforge-settings-row">
+                <input type="checkbox" id="sf-dm-notify" ${s.dmNotify ? 'checked' : ''}>
+                <label for="sf-dm-notify">${escapeHtml(t('dm.notify'))}</label>
+            </div>
+            <div class="storyforge-settings-row">
+                <input type="checkbox" id="sf-dm-secret" ${s.dmSecret ? 'checked' : ''}>
+                <label for="sf-dm-secret" title="${escapeHtml(t('dm.secretHint'))}">${escapeHtml(t('dm.secret'))}</label>
+            </div>
+            <div class="storyforge-settings-row">
+                <button class="sf-dm-fire-btn" id="sf-dm-fire"><i class="fa-solid fa-bolt"></i> ${escapeHtml(t('dm.fireNow'))}</button>
+            </div>
+        </div>
+        <div class="sf-dm-tools-label">${escapeHtml(t('dm.toolsLabel'))}</div>
+        <div class="sf-dm-tools">${toolRows}</div>`;
+}
+
 function buildPopupHtml() {
     const settings = getSettings();
     const tools = getTools();
@@ -1263,6 +1507,13 @@ function buildPopupHtml() {
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-reminders">${buildRemindersHtml()}</div>
+        </div>
+        <div class="storyforge-section">
+            <div class="storyforge-section-toggle" id="sf-toggle-director">
+                <h3><i class="fa-solid fa-clapperboard"></i> ${escapeHtml(t('dm.section.title'))}${settings.dmEnabled ? ' <span class="sf-dm-on-dot" title="' + escapeHtml(t('dm.enable')) + '"></span>' : ''}</h3>
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div class="storyforge-section-body" id="sf-body-director">${buildDirectorHtml()}</div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-settings">
@@ -1397,6 +1648,9 @@ async function openStoryForgePopup() {
 
         // Reminders
         bindReminders();
+
+        // Director Mode
+        bindDirector();
     });
 
     await popup.show();
@@ -1412,6 +1666,10 @@ function bindSections() {
     $('#sf-toggle-reminders').off('click').on('click', function () {
         $(this).toggleClass('open');
         $('#sf-body-reminders').toggleClass('open');
+    });
+    $('#sf-toggle-director').off('click').on('click', function () {
+        $(this).toggleClass('open');
+        $('#sf-body-director').toggleClass('open');
     });
     $('#sf-toggle-settings').off('click').on('click', function () {
         $(this).toggleClass('open');
@@ -1516,6 +1774,63 @@ function bindReminders() {
     });
 }
 
+// Wire up the Director Mode section inside the open popup. Delegated +
+// namespaced handlers on the stable #sf-body-director container, same pattern
+// as bindReminders() — survives partial rerenders, never stacks.
+function bindDirector() {
+    const $body = $('#sf-body-director');
+    if (!$body.length) return;
+    const NS = '.sf-dm';
+    $body.off(NS);
+
+    $body.on('change' + NS, '#sf-dm-enabled', function () {
+        const on = $(this).is(':checked');
+        getSettings().dmEnabled = on;
+        saveSettings();
+        if (!on) dmClearAllQueued();
+        dmUpdateStatus();
+        // Reflect the on-dot in the section header without a full rerender.
+        const $h3 = $('#sf-toggle-director h3');
+        $h3.find('.sf-dm-on-dot').remove();
+        if (on) $h3.append('<span class="sf-dm-on-dot"></span>');
+    });
+    $body.on('input' + NS, '#sf-dm-intensity', function () {
+        const v = Math.min(10, Math.max(0, parseInt($(this).val(), 10) || 0));
+        getSettings().dmIntensity = v;
+        saveSettings();
+        $('#sf-dm-intensity-val').text(`${v * 10}%`);
+        dmUpdateStatus();
+    });
+    $body.on('input' + NS, '#sf-dm-mingap', function () {
+        const v = Math.min(50, Math.max(0, parseInt($(this).val(), 10) || 0));
+        getSettings().dmMinGap = v;
+        saveSettings();
+        dmUpdateStatus();
+    });
+    $body.on('change' + NS, '#sf-dm-notify', function () {
+        getSettings().dmNotify = $(this).is(':checked');
+        saveSettings();
+    });
+    $body.on('change' + NS, '#sf-dm-secret', function () {
+        getSettings().dmSecret = $(this).is(':checked');
+        saveSettings();
+    });
+    $body.on('click' + NS, '#sf-dm-fire', () => {
+        dmFireNow();
+    });
+
+    // Per-tool config
+    $body.on('change' + NS, '.sf-dm-tool-enabled', function () {
+        updateDirectorToolConfig($(this).data('dmtool'), { enabled: $(this).is(':checked') });
+    });
+    $body.on('input' + NS, '.sf-dm-tool-weight', function () {
+        updateDirectorToolConfig($(this).data('dmtool'), { weight: parseInt($(this).val(), 10) });
+    });
+    $body.on('input' + NS, '.sf-dm-tool-cooldown', function () {
+        updateDirectorToolConfig($(this).data('dmtool'), { cooldown: parseInt($(this).val(), 10) });
+    });
+}
+
 function refreshPopupContent() {
     const container = $('.storyforge-popup');
     if (!container.length) return;
@@ -1551,6 +1866,9 @@ function refreshPopupContent() {
 
     // Rebind reminders
     bindReminders();
+
+    // Rebind director
+    bindDirector();
 }
 
 // ==== Menu ====
@@ -1614,6 +1932,29 @@ function registerSlashCommands() {
             name: 'storyforge',
             callback: () => { openStoryForgePopup(); return ''; },
             helpString: '<div>Open StoryForge panel.</div>',
+        }));
+    } catch (e) { /* already registered */ }
+
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'sf-director',
+            callback: () => {
+                const s = getSettings();
+                s.dmEnabled = !s.dmEnabled;
+                saveSettings();
+                if (!s.dmEnabled) dmClearAllQueued();
+                dmUpdateStatus();
+                return s.dmEnabled ? t('dm.slashOn') : t('dm.slashOff');
+            },
+            helpString: '<div>StoryForge: Toggle Director Mode (autonomous story events).</div>',
+        }));
+    } catch (e) { /* already registered */ }
+
+    try {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'sf-direct',
+            callback: () => dmFireNow() ? t('dm.slashFired') : t('dm.noCandidates'),
+            helpString: '<div>StoryForge: Force a Director Mode event for the next reply.</div>',
         }));
     } catch (e) { /* already registered */ }
 }
@@ -3720,7 +4061,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.6.0 (reminders / prompt folders)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.7.0 (director mode)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -3759,15 +4100,20 @@ jQuery(async () => {
         // "every N model replies" semantics; user messages are ignored).
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
             try { onBotReplyForReminders(); } catch (e) { console.error(`[${MODULE_NAME}] reminder sync`, e); }
+            // Director Mode: consume the just-used event, tick cooldowns, maybe
+            // roll a new one for the next reply.
+            try { dmOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] director`, e); }
         });
         // New chat = fresh cycle: reset counters and disarm every-N reminders.
         eventSource.on(event_types.CHAT_CHANGED, () => {
             try { resetReminderCounters(); syncReminderInjections(false); } catch { /* ignore */ }
+            // Director pacing is per-chat: drop queued events and cooldowns.
+            try { dmResetState(); } catch { /* ignore */ }
         });
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.6.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.7.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
