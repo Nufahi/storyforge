@@ -455,6 +455,120 @@
 .sf-reminder.sf-rem-ephemeral .sf-reminder-status {
     color: #e88; background: rgba(255,107,107,.1);
 }
+
+/* Reminder "match" pattern field */
+.sf-rem-match-wrap input[type="text"] {
+    width: 130px; padding: 3px 6px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: monospace;
+}
+
+/* === Plot Threads === */
+.sf-pt-intro {
+    font-size: 11px; line-height: 1.45;
+    color: var(--SmartThemeQuoteColor, #999); margin-bottom: 10px;
+}
+.sf-pt-empty {
+    font-size: 12px; color: var(--SmartThemeQuoteColor, #888);
+    font-style: italic; padding: 6px 0 10px;
+}
+.sf-pt-count {
+    display: inline-block; min-width: 16px; text-align: center;
+    font-size: 11px; font-weight: 700; margin-left: 6px;
+    padding: 1px 6px; border-radius: 10px;
+    background: var(--SmartThemeQuoteColor, #c9a227); color: #1a1a1a;
+}
+.sf-pt-list { display: flex; flex-direction: column; gap: 8px; }
+.sf-pt-row {
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 8px; padding: 8px 10px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.03));
+    display: flex; flex-direction: column; gap: 6px;
+}
+.sf-pt-text {
+    width: 100%; resize: vertical; min-height: 34px;
+    font-size: 12px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit; line-height: 1.5;
+}
+.sf-pt-text:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.sf-pt-meta { display: flex; align-items: center; gap: 8px; }
+.sf-pt-age {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--SmartThemeQuoteColor, #999);
+    padding: 2px 7px; border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.05));
+    white-space: nowrap;
+}
+/* Threads open a long time pulse a warm warning color. */
+.sf-pt-age.sf-pt-stale { color: #1a1a1a; background: var(--SmartThemeQuoteColor, #c9a227); font-weight: 700; }
+.sf-pt-fire {
+    display: flex; align-items: center; gap: 5px; margin-left: auto;
+    padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    border: 1px solid rgba(201,162,39,.4);
+    background: rgba(201,162,39,.1);
+    color: var(--SmartThemeQuoteColor, #c9a227); transition: all .15s;
+}
+.sf-pt-fire:hover { background: rgba(201,162,39,.22); }
+.sf-pt-delete { cursor: pointer; font-size: 13px; color: var(--SmartThemeQuoteColor, #999); transition: color .15s; padding: 2px; }
+.sf-pt-delete:hover { color: #ff6b6b; }
+.sf-pt-add-row { display: flex; gap: 8px; margin-top: 10px; align-items: stretch; }
+.sf-pt-add-row input {
+    flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; font-size: 13px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.sf-pt-add-row input:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.sf-pt-add-row .storyforge-add-btn { margin: 0; flex: 0 0 auto; white-space: nowrap; }
+
+@media (max-width: 600px) {
+    .sf-rem-match-wrap input[type="text"] { width: 100%; }
+    .sf-pt-add-row { flex-direction: column; }
+}
+
+/* === Story State Tracker === */
+.sf-ss-intro {
+    font-size: 11px; line-height: 1.45;
+    color: var(--SmartThemeQuoteColor, #999); margin-bottom: 10px;
+}
+.sf-ss-fields { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.sf-ss-field { display: flex; flex-direction: column; gap: 3px; }
+.sf-ss-label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
+    color: var(--SmartThemeQuoteColor, #999);
+}
+.sf-ss-label i { width: 13px; text-align: center; }
+.sf-ss-input {
+    width: 100%; padding: 6px 9px; border-radius: 7px; font-size: 13px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
+    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
+}
+.sf-ss-input:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.sf-ss-actions { display: flex; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
+.sf-ss-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 7px; font-size: 12px; cursor: pointer;
+    border: 1px solid rgba(201,162,39,.4);
+    background: rgba(201,162,39,.1);
+    color: var(--SmartThemeQuoteColor, #c9a227); transition: all .15s;
+}
+.sf-ss-btn:hover:not(:disabled) { background: rgba(201,162,39,.22); }
+.sf-ss-btn:disabled { opacity: .5; cursor: default; }
+.sf-ss-btn.sf-ss-clear {
+    border-color: var(--SmartThemeBorderColor, #444);
+    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+.sf-ss-btn.sf-ss-clear:hover { background: rgba(255,107,107,.12); border-color: rgba(255,107,107,.4); color: #ff6b6b; }
+.sf-ss-hint {
+    font-size: 10px; line-height: 1.4; color: var(--SmartThemeQuoteColor, #888);
+    font-style: italic;
+}
 .sf-dm-tool-opt {
     display: flex; align-items: center; gap: 5px;
     font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);

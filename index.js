@@ -197,8 +197,37 @@ const activeInjections = new Map();
 // arg (0 = system, 1 = user, 2 = assistant). System is the safe default for
 // "model must not forget X" style notes.
 const REMINDER_ROLES = { system: 0, user: 1, assistant: 2 };
-const REMINDER_MODES = ['always', 'every'];
+const REMINDER_MODES = ['always', 'every', 'match'];
 const MAX_REMINDER_FIELD_LEN = 10000;
+const MAX_REMINDER_PATTERN_LEN = 300;
+
+// Compile a user-supplied reminder match pattern into a RegExp, case-insensitive.
+// The pattern is treated as a raw regex source (so "attack|sword|fight" works),
+// but a malformed pattern must never throw and break the whole sync pass.
+// Results are cached so we don't recompile every reply. ReDoS risk is low (we
+// run it against a single bounded message slice), but we still cap length.
+const reminderPatternCache = new Map(); // pattern string -> RegExp | null
+function compileReminderPattern(pattern) {
+    if (typeof pattern !== 'string' || !pattern.trim()) return null;
+    const src = pattern.slice(0, MAX_REMINDER_PATTERN_LEN);
+    if (reminderPatternCache.has(src)) return reminderPatternCache.get(src);
+    let re = null;
+    try { re = new RegExp(src, 'i'); } catch { re = null; }
+    reminderPatternCache.set(src, re);
+    return re;
+}
+
+// Text used to evaluate a reminder's match pattern: the last few messages of
+// the live chat (so a keyword in the latest user OR bot turn can trigger).
+function reminderMatchText(scanLast = 2) {
+    try {
+        const chat = SillyTavern.getContext().chat;
+        if (!Array.isArray(chat) || !chat.length) return '';
+        return chat.slice(-Math.max(1, scanLast))
+            .map(m => (m && typeof m.mes === 'string') ? m.mes : '')
+            .join('\n');
+    } catch { return ''; }
+}
 
 // Per-reminder cycle counter. Keyed by reminder id, value = number of model
 // replies seen since this reminder last fired. In-memory only (resets on
@@ -263,6 +292,21 @@ const defaultSettings = Object.freeze({
     dmNotify: true,             // toast when the director queues something
     dmSecret: false,            // hide WHICH tool was queued (surprise mode)
     dmTools: null,              // { [toolId]: { enabled, weight (1-10), cooldown (replies) } }
+    // ==== Plot Threads (Chekhov's guns) ====
+    // A list of dangling story hooks the player has planted ("a stranger left a
+    // note"). Each tracks how many bot replies it has been open; firing one
+    // queues a one-shot injection telling the model to resolve that thread.
+    plotThreads: null,          // [{ id, text, createdReply, fired }]
+    ptFireDepth: 1,             // injection depth when a thread is fired
+    // ==== Story State Tracker ====
+    // A compact "scene state" panel (location / time / who's present / open
+    // threads) injected as a single always-on reminder so the model stops
+    // forgetting where everyone is. Can be filled by hand or auto-extracted
+    // from recent chat by the Choice-Cards built-in API (a cheap model).
+    ssEnabled: false,
+    ssState: null,              // { location, time, present, threads }
+    ssDepth: 1,                 // injection depth for the scene-state block
+    ssAuto: false,              // auto-refresh after every bot reply (uses builtin API)
     // ==== Choice Cards ====
     ccEnabled: true,
     ccAuto: false,                      // generate automatically after every bot reply
@@ -536,7 +580,7 @@ function addReminder(folderId, label, prompt) {
     folder.reminders.push({
         id, label: label || 'Reminder', enabled: false, collapsed: false,
         mode: 'every', interval: 2, depth: 1, role: 'system',
-        prompt: prompt || '',
+        prompt: prompt || '', pattern: '', scanLast: 2,
     });
     saveSettings();
     return id;
@@ -553,6 +597,8 @@ function updateReminder(remId, data) {
     if (Number.isFinite(data.interval)) r.interval = Math.min(Math.max(Math.floor(data.interval), 1), 50);
     if (Number.isFinite(data.depth)) r.depth = Math.min(Math.max(Math.floor(data.depth), 0), 10);
     if (data.role in REMINDER_ROLES) r.role = data.role;
+    if (typeof data.pattern === 'string') r.pattern = data.pattern.slice(0, MAX_REMINDER_PATTERN_LEN);
+    if (Number.isFinite(data.scanLast)) r.scanLast = Math.min(Math.max(Math.floor(data.scanLast), 1), 10);
     saveSettings();
     // Re-sync injection state immediately so toggling reflects without a reply.
     syncReminderInjections();
@@ -704,6 +750,17 @@ function syncReminderInjections(advance = false) {
         }
         if (reminder.mode === 'always') {
             setReminderInjection(reminder);
+            reminderArmed.delete(reminder.id);
+            continue;
+        }
+        if (reminder.mode === 'match') {
+            // Keyword-triggered: inject only when the last few messages match
+            // the reminder's pattern. Evaluated on every sync (init, edit AND
+            // bot reply) so it reacts to the freshest chat state.
+            const re = compileReminderPattern(reminder.pattern);
+            const hit = re && re.test(reminderMatchText(reminder.scanLast || 2));
+            if (hit) setReminderInjection(reminder);
+            else clearReminderInjection(reminder.id);
             reminderArmed.delete(reminder.id);
             continue;
         }
@@ -907,6 +964,266 @@ function dmStatusText() {
 function dmUpdateStatus() {
     const el = $('#sf-dm-status');
     if (el.length) el.text(dmStatusText());
+}
+
+// ==== Plot Threads (Chekhov's guns) ========================================
+// Dangling hooks the player plants, with an "age in bot replies" counter and a
+// one-click "fire" that injects a one-shot resolve instruction for the next
+// generation. Age is tracked via a per-chat reply counter (in-memory, reset on
+// chat change, like reminder counters) so it matches "X replies open" intent.
+
+let ptReplyClock = 0;               // bot replies seen in the current chat
+const ptFiredInjections = new Set(); // thread ids currently injected (one-shot)
+
+function getPlotThreads() {
+    const s = getSettings();
+    if (!Array.isArray(s.plotThreads)) s.plotThreads = [];
+    return s.plotThreads;
+}
+
+function addPlotThread(text) {
+    const threads = getPlotThreads();
+    const clean = String(text || '').slice(0, MAX_REMINDER_FIELD_LEN);
+    const id = makeId('pt');
+    threads.push({ id, text: clean, createdReply: ptReplyClock, fired: false });
+    saveSettings();
+    return id;
+}
+
+function updatePlotThread(id, text) {
+    const th = getPlotThreads().find(x => x.id === id);
+    if (th) { th.text = String(text || '').slice(0, MAX_REMINDER_FIELD_LEN); saveSettings(); }
+}
+
+function deletePlotThread(id) {
+    const s = getSettings();
+    ptClearInjection(id);
+    s.plotThreads = getPlotThreads().filter(x => x.id !== id);
+    saveSettings();
+}
+
+function ptClearInjection(id) {
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_pt_${id}`, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM,
+    );
+    ptFiredInjections.delete(id);
+}
+
+function ptClearAllInjections() {
+    for (const id of [...ptFiredInjections]) ptClearInjection(id);
+}
+
+// Fire a thread: queue a one-shot injection that nudges the model to start
+// resolving it on the next reply. Auto-clears after that reply (like a tool).
+function firePlotThread(id) {
+    const th = getPlotThreads().find(x => x.id === id);
+    if (!th || !th.text?.trim()) return false;
+    const s = getSettings();
+    if (!s.enabled) { toastr.warning(t('common.disabled'), t('app')); return false; }
+    // Sanitize the hook text the same way char-action injection does: it's
+    // player-written, but may be pasted, so strip control chars / fences and
+    // neutralize quote-breakouts before wrapping it in an instruction.
+    const safe = String(th.text)
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/```+/g, '')
+        .replace(/"/g, "'")
+        .trim()
+        .slice(0, MAX_REMINDER_FIELD_LEN);
+    const prompt = t('pt.fire.prompt', { hook: safe });
+    const depth = Math.max(0, Math.min(10, s.ptFireDepth | 0));
+    SillyTavern.getContext().setExtensionPrompt(
+        `${MODULE_NAME}_pt_${id}`, prompt, POSITION_IN_CHAT, depth, true, ROLE_SYSTEM,
+    );
+    ptFiredInjections.add(id);
+    th.fired = true;
+    saveSettings();
+    toastr.info(t('pt.fired', { age: ptThreadAge(th) }), t('pt.toastTitle'), { timeOut: 3000 });
+    return true;
+}
+
+function ptThreadAge(th) {
+    return Math.max(0, ptReplyClock - (th.createdReply | 0));
+}
+
+// Called once per finished bot reply: tick the age clock and consume any fired
+// one-shot injections (they were present for the reply that just rendered).
+function ptOnBotReply() {
+    ptReplyClock++;
+    ptClearAllInjections();
+    if ($('.storyforge-popup').length) ptRefreshAges();
+}
+
+function ptResetForChat() {
+    ptReplyClock = 0;
+    ptClearAllInjections();
+    // Reset per-chat age baseline so threads read "0" in a fresh chat rather
+    // than a stale age from the previous conversation.
+    for (const th of getPlotThreads()) th.createdReply = 0;
+}
+
+// Update just the age badges in an open popup without a full rerender.
+function ptRefreshAges() {
+    for (const th of getPlotThreads()) {
+        const el = $(`.sf-pt-age[data-pt="${escapeHtml(th.id)}"]`);
+        if (!el.length) continue;
+        const age = ptThreadAge(th);
+        el.text(t('pt.age', { n: age }))
+            .toggleClass('sf-pt-stale', age >= 20);
+    }
+}
+
+// ==== Story State Tracker ==================================================
+// A compact, always-on "scene state" block (location / time / who's present /
+// open threads) so the model stops losing track of where everyone is. Filled
+// by hand or auto-extracted from recent chat via the Choice-Cards dispatcher.
+
+const SS_FIELDS = ['location', 'time', 'present', 'threads'];
+const SS_MAX_FIELD_LEN = 600;
+let ssAutoBusy = false; // guard against overlapping auto-refreshes
+
+function getSceneState() {
+    const s = getSettings();
+    if (!s.ssState || typeof s.ssState !== 'object') {
+        s.ssState = { location: '', time: '', present: '', threads: '' };
+    }
+    for (const f of SS_FIELDS) {
+        if (typeof s.ssState[f] !== 'string') s.ssState[f] = '';
+    }
+    return s.ssState;
+}
+
+function setSceneStateField(field, value) {
+    if (!SS_FIELDS.includes(field)) return;
+    const st = getSceneState();
+    st[field] = String(value || '').slice(0, SS_MAX_FIELD_LEN);
+    saveSettings();
+    syncSceneStateInjection();
+}
+
+// Compose the single injected block from non-empty fields. {{user}}/{{char}}
+// in the field text resolve to real names. Returns '' when nothing is set.
+function buildSceneStatePrompt() {
+    const st = getSceneState();
+    const parts = [];
+    const add = (key, val) => {
+        const v = String(val || '').trim();
+        if (v) parts.push(`${t('ss.field.' + key)}: ${ccSubstStMacros(v)}`);
+    };
+    add('location', st.location);
+    add('time', st.time);
+    add('present', st.present);
+    add('threads', st.threads);
+    if (!parts.length) return '';
+    return `[${t('ss.injectLabel')}] ${parts.join(' | ')}`;
+}
+
+const SS_INJECT_KEY = `${MODULE_NAME}_scenestate`;
+
+function syncSceneStateInjection() {
+    const ctx = SillyTavern.getContext();
+    const s = getSettings();
+    const prompt = (s.enabled && s.ssEnabled) ? buildSceneStatePrompt() : '';
+    if (prompt) {
+        const depth = Math.max(0, Math.min(10, s.ssDepth | 0));
+        ctx.setExtensionPrompt(SS_INJECT_KEY, prompt, POSITION_IN_CHAT, depth, true, ROLE_SYSTEM);
+    } else {
+        ctx.setExtensionPrompt(SS_INJECT_KEY, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM);
+    }
+}
+
+function ssResetForChat() {
+    // Scene state is per-conversation: wipe on chat switch so we don't carry a
+    // bedroom scene into a tavern. (Mirrors plot-thread age reset.)
+    const st = getSceneState();
+    for (const f of SS_FIELDS) st[f] = '';
+    saveSettings();
+    syncSceneStateInjection();
+    if ($('.storyforge-popup').length) ssRefreshFields();
+}
+
+// Build the extraction instruction sent to the cheap model.
+function buildSceneStateExtractPrompt() {
+    return t('ss.extractPrompt');
+}
+
+// Parse the model's JSON reply into a sanitized {location,time,present,threads}.
+function ssParseExtract(rawText) {
+    const jsonStr = ccExtractJson(rawText);
+    if (!jsonStr) return null;
+    let obj;
+    try { obj = JSON.parse(jsonStr); } catch { return null; }
+    if (!obj || typeof obj !== 'object') return null;
+    const clean = (v) => {
+        if (Array.isArray(v)) v = v.join(', ');
+        return String(v ?? '')
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .trim()
+            .slice(0, SS_MAX_FIELD_LEN);
+    };
+    return {
+        location: clean(obj.location),
+        time: clean(obj.time),
+        present: clean(obj.present ?? obj.who ?? obj.characters),
+        threads: clean(obj.threads ?? obj.open ?? obj.hooks),
+    };
+}
+
+// Auto-refresh scene state from recent chat. `silent` suppresses the "done"
+// toast (used by the post-reply auto hook). Returns true on success.
+async function ssAutoRefresh({ silent = false } = {}) {
+    if (ssAutoBusy) return false;
+    ssAutoBusy = true;
+    if (!silent) ssSetRefreshBtn(true);
+    try {
+        const raw = await ccDispatchPrompt(buildSceneStateExtractPrompt());
+        const parsed = ssParseExtract(raw);
+        if (!parsed) {
+            if (!silent) toastr.warning(t('ss.parseFail'), t('ss.toastTitle'));
+            return false;
+        }
+        const st = getSceneState();
+        // Only overwrite a field when the model returned something for it, so a
+        // blank extraction doesn't wipe a field the user typed by hand.
+        let changed = false;
+        for (const f of SS_FIELDS) {
+            if (parsed[f] && parsed[f] !== st[f]) { st[f] = parsed[f]; changed = true; }
+        }
+        if (changed) { saveSettings(); syncSceneStateInjection(); }
+        if ($('.storyforge-popup').length) ssRefreshFields();
+        if (!silent) toastr.success(t('ss.refreshed'), t('ss.toastTitle'), { timeOut: 2500 });
+        return true;
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] scene-state extract failed`, err);
+        if (!silent) toastr.error(t('ss.refreshFail', { msg: String(err?.message || err).slice(0, 120) }), t('ss.toastTitle'), { timeOut: 5000 });
+        return false;
+    } finally {
+        ssAutoBusy = false;
+        if (!silent) ssSetRefreshBtn(false);
+    }
+}
+
+// Called after each bot reply when auto mode is on.
+function ssOnBotReply() {
+    const s = getSettings();
+    if (!s.enabled || !s.ssEnabled || !s.ssAuto) return;
+    // Fire-and-forget; never block the reply pipeline.
+    ssAutoRefresh({ silent: true }).catch(() => {});
+}
+
+// Reflect the live state into an open popup's inputs.
+function ssRefreshFields() {
+    const st = getSceneState();
+    for (const f of SS_FIELDS) {
+        const el = $(`.sf-ss-input[data-ss="${f}"]`);
+        if (el.length && el.val() !== st[f]) el.val(st[f]);
+    }
+}
+
+function ssSetRefreshBtn(busy) {
+    const $btn = $('#sf-ss-refresh');
+    if (!$btn.length) return;
+    $btn.prop('disabled', busy);
+    $btn.find('i').toggleClass('fa-spin', busy);
 }
 
 // Track the last focused editable textarea/input so quick inserts can target
@@ -1438,6 +1755,12 @@ function reminderStatusText(rem) {
         ttlTag = ' · ' + t('rem.status.ttl', { n: Math.max(0, rem.ttl) });
     }
     if (rem.mode === 'always') return t('rem.status.always') + ttlTag;
+    if (rem.mode === 'match') {
+        const re = compileReminderPattern(rem.pattern);
+        if (!re) return t('rem.status.matchEmpty') + ttlTag;
+        const active = re.test(reminderMatchText(rem.scanLast || 2));
+        return (active ? t('rem.status.matchOn') : t('rem.status.matchOff')) + ttlTag;
+    }
     const interval = Math.max(1, rem.interval || 1);
     const count = reminderCounters.get(rem.id) || 0;
     const remaining = Math.max(0, interval - count);
@@ -1462,6 +1785,7 @@ function buildRemindersHtml() {
         const remsHtml = (folder.reminders || []).map(rem => {
             const rid = escapeHtml(rem.id);
             const everyVisible = rem.mode === 'every' ? '' : 'style="display:none"';
+            const matchVisible = rem.mode === 'match' ? '' : 'style="display:none"';
             // Reminders default to collapsed (only the head row shows) to keep
             // the panel compact, especially on mobile. Tap the row to expand.
             const isOpen = rem.collapsed === false;
@@ -1481,10 +1805,14 @@ function buildRemindersHtml() {
                             <select class="sf-rem-mode" data-rem="${rid}">
                                 <option value="always" ${rem.mode === 'always' ? 'selected' : ''}>${escapeHtml(t('rem.mode.always'))}</option>
                                 <option value="every" ${rem.mode === 'every' ? 'selected' : ''}>${escapeHtml(t('rem.mode.every'))}</option>
+                                <option value="match" ${rem.mode === 'match' ? 'selected' : ''}>${escapeHtml(t('rem.mode.match'))}</option>
                             </select>
                         </label>
                         <label class="sf-rem-every-wrap" data-rem="${rid}" ${everyVisible}>${escapeHtml(t('rem.everyN'))}
                             <input type="number" class="sf-rem-interval" data-rem="${rid}" min="1" max="50" value="${escapeHtml(String(rem.interval || 2))}">
+                        </label>
+                        <label class="sf-rem-match-wrap" data-rem="${rid}" ${matchVisible} title="${escapeHtml(t('rem.matchHint'))}">${escapeHtml(t('rem.match'))}
+                            <input type="text" class="sf-rem-pattern" data-rem="${rid}" maxlength="300" value="${escapeHtml(rem.pattern || '')}" placeholder="${escapeHtml(t('rem.matchPh'))}">
                         </label>
                         <label>${escapeHtml(t('rem.depth'))}
                             <input type="number" class="sf-rem-depth" data-rem="${rid}" min="0" max="10" value="${escapeHtml(String(rem.depth ?? 1))}">
@@ -1566,6 +1894,67 @@ function buildDirectorHtml() {
         <div class="sf-dm-tools">${toolRows}</div>`;
 }
 
+// Build the Plot Threads section HTML (dangling hooks + age + fire button).
+function buildPlotThreadsHtml() {
+    const threads = getPlotThreads();
+    const rows = threads.map(th => {
+        const id = escapeHtml(th.id);
+        const age = ptThreadAge(th);
+        const stale = age >= 20 ? ' sf-pt-stale' : '';
+        return `<div class="sf-pt-row" data-pt="${id}">
+            <textarea class="sf-pt-text" data-pt="${id}" rows="1" maxlength="2000" placeholder="${escapeHtml(t('pt.textPh'))}">${escapeHtml(th.text || '')}</textarea>
+            <div class="sf-pt-meta">
+                <span class="sf-pt-age${stale}" data-pt="${id}">${escapeHtml(t('pt.age', { n: age }))}</span>
+                <button class="sf-pt-fire" data-pt="${id}" title="${escapeHtml(t('pt.fireHint'))}"><i class="fa-solid fa-bullseye"></i> ${escapeHtml(t('pt.fire'))}</button>
+                <span class="sf-pt-delete fa-solid fa-xmark" data-pt="${id}" title="${escapeHtml(t('common.delete'))}"></span>
+            </div>
+        </div>`;
+    }).join('');
+    const empty = threads.length ? '' : `<div class="sf-pt-empty">${escapeHtml(t('pt.empty'))}</div>`;
+    return `<div class="sf-pt-intro">${escapeHtml(t('pt.intro'))}</div>
+        ${empty}
+        <div class="sf-pt-list">${rows}</div>
+        <div class="sf-pt-add-row">
+            <input type="text" id="sf-pt-new" maxlength="2000" placeholder="${escapeHtml(t('pt.addPh'))}">
+            <button class="storyforge-add-btn" id="sf-pt-add-btn"><i class="fa-solid fa-plus"></i> ${escapeHtml(t('pt.add'))}</button>
+        </div>`;
+}
+
+// Build the Story State Tracker section HTML (scene-state fields + refresh).
+function buildSceneStateHtml() {
+    const s = getSettings();
+    const st = getSceneState();
+    const field = (key, icon) => `
+        <div class="sf-ss-field">
+            <label class="sf-ss-label"><i class="fa-solid ${icon}"></i> ${escapeHtml(t('ss.field.' + key))}</label>
+            <input type="text" class="sf-ss-input" data-ss="${key}" maxlength="600" value="${escapeHtml(st[key] || '')}" placeholder="${escapeHtml(t('ss.ph.' + key))}">
+        </div>`;
+    return `<div class="sf-ss-intro">${escapeHtml(t('ss.intro'))}</div>
+        <div class="storyforge-settings-row">
+            <input type="checkbox" id="sf-ss-enabled" ${s.ssEnabled ? 'checked' : ''}>
+            <label for="sf-ss-enabled">${escapeHtml(t('ss.enable'))}</label>
+        </div>
+        <div class="sf-ss-fields">
+            ${field('location', 'fa-location-dot')}
+            ${field('time', 'fa-clock')}
+            ${field('present', 'fa-users')}
+            ${field('threads', 'fa-link')}
+        </div>
+        <div class="storyforge-settings-row">
+            <label for="sf-ss-depth">${escapeHtml(t('ss.depth'))}</label>
+            <input type="number" id="sf-ss-depth" min="0" max="10" value="${escapeHtml(String(s.ssDepth ?? 1))}">
+        </div>
+        <div class="storyforge-settings-row">
+            <input type="checkbox" id="sf-ss-auto" ${s.ssAuto ? 'checked' : ''}>
+            <label for="sf-ss-auto" title="${escapeHtml(t('ss.autoHint'))}">${escapeHtml(t('ss.auto'))}</label>
+        </div>
+        <div class="sf-ss-actions">
+            <button class="sf-ss-btn" id="sf-ss-refresh"><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('ss.refresh'))}</button>
+            <button class="sf-ss-btn sf-ss-clear" id="sf-ss-clear"><i class="fa-solid fa-eraser"></i> ${escapeHtml(t('ss.clear'))}</button>
+        </div>
+        <div class="sf-ss-hint">${escapeHtml(t('ss.refreshHint'))}</div>`;
+}
+
 function buildPopupHtml() {
     const settings = getSettings();
     const tools = getTools();
@@ -1629,6 +2018,20 @@ function buildPopupHtml() {
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-director">${buildDirectorHtml()}</div>
+        </div>
+        <div class="storyforge-section">
+            <div class="storyforge-section-toggle" id="sf-toggle-threads">
+                <h3><i class="fa-solid fa-bullseye"></i> ${escapeHtml(t('pt.section.title'))}${getPlotThreads().length ? ' <span class="sf-pt-count">' + getPlotThreads().length + '</span>' : ''}</h3>
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div class="storyforge-section-body" id="sf-body-threads">${buildPlotThreadsHtml()}</div>
+        </div>
+        <div class="storyforge-section">
+            <div class="storyforge-section-toggle" id="sf-toggle-scenestate">
+                <h3><i class="fa-solid fa-map-pin"></i> ${escapeHtml(t('ss.section.title'))}${settings.ssEnabled ? ' <span class="sf-dm-on-dot" title="' + escapeHtml(t('ss.enable')) + '"></span>' : ''}</h3>
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div class="storyforge-section-body" id="sf-body-scenestate">${buildSceneStateHtml()}</div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-settings">
@@ -1766,6 +2169,12 @@ async function openStoryForgePopup() {
 
         // Director Mode
         bindDirector();
+
+        // Plot Threads
+        bindPlotThreads();
+
+        // Story State Tracker
+        bindSceneState();
     });
 
     await popup.show();
@@ -1785,6 +2194,14 @@ function bindSections() {
     $('#sf-toggle-director').off('click').on('click', function () {
         $(this).toggleClass('open');
         $('#sf-body-director').toggleClass('open');
+    });
+    $('#sf-toggle-threads').off('click').on('click', function () {
+        $(this).toggleClass('open');
+        $('#sf-body-threads').toggleClass('open');
+    });
+    $('#sf-toggle-scenestate').off('click').on('click', function () {
+        $(this).toggleClass('open');
+        $('#sf-body-scenestate').toggleClass('open');
     });
     $('#sf-toggle-settings').off('click').on('click', function () {
         $(this).toggleClass('open');
@@ -1870,10 +2287,15 @@ function bindReminders() {
         const mode = $(this).val();
         updateReminder(rid, { mode });
         $(`.sf-rem-every-wrap[data-rem="${rid}"]`).toggle(mode === 'every');
+        $(`.sf-rem-match-wrap[data-rem="${rid}"]`).toggle(mode === 'match');
         updateReminderBadge();
     });
     $body.on('input' + NS, '.sf-rem-interval', function () {
         updateReminder($(this).data('rem'), { interval: parseInt($(this).val(), 10) });
+        updateReminderBadge();
+    });
+    $body.on('input' + NS, '.sf-rem-pattern', function () {
+        updateReminder($(this).data('rem'), { pattern: $(this).val() });
         updateReminderBadge();
     });
     $body.on('input' + NS, '.sf-rem-depth', function () {
@@ -1946,6 +2368,88 @@ function bindDirector() {
     });
 }
 
+// Wire up the Plot Threads section. Delegated/namespaced on the stable
+// #sf-body-threads container so it survives the partial rerenders we do when
+// adding/removing a thread.
+function bindPlotThreads() {
+    const $body = $('#sf-body-threads');
+    if (!$body.length) return;
+    const NS = '.sf-pt';
+    $body.off(NS);
+
+    const rerender = () => {
+        $('#sf-body-threads').html(buildPlotThreadsHtml());
+        // Keep the header count in sync.
+        const $cnt = $('#sf-toggle-threads .sf-pt-count');
+        const n = getPlotThreads().length;
+        if (n) { if ($cnt.length) $cnt.text(n); else $('#sf-toggle-threads h3').append(`<span class="sf-pt-count">${n}</span>`); }
+        else $cnt.remove();
+    };
+
+    const addFromInput = () => {
+        const val = $('#sf-pt-new').val().trim();
+        if (!val) { toastr.warning(t('pt.enterText'), t('app')); return; }
+        addPlotThread(val);
+        rerender();
+    };
+    $body.on('click' + NS, '#sf-pt-add-btn', addFromInput);
+    $body.on('keydown' + NS, '#sf-pt-new', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); addFromInput(); }
+    });
+
+    $body.on('input' + NS, '.sf-pt-text', function () {
+        updatePlotThread($(this).data('pt'), $(this).val());
+    });
+    $body.on('click' + NS, '.sf-pt-fire', function () {
+        firePlotThread($(this).data('pt'));
+    });
+    $body.on('click' + NS, '.sf-pt-delete', async function () {
+        const id = $(this).data('pt');
+        const th = getPlotThreads().find(x => x.id === id);
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(
+            t('pt.deleteTitle'), t('pt.deleteBody', { text: (th?.text || '').slice(0, 80) }),
+        );
+        if (confirmed) { deletePlotThread(id); rerender(); }
+    });
+}
+
+// Wire up the Story State Tracker section.
+function bindSceneState() {
+    const $body = $('#sf-body-scenestate');
+    if (!$body.length) return;
+    const NS = '.sf-ss';
+    $body.off(NS);
+
+    $body.on('change' + NS, '#sf-ss-enabled', function () {
+        const on = $(this).is(':checked');
+        getSettings().ssEnabled = on;
+        saveSettings();
+        syncSceneStateInjection();
+        const $h3 = $('#sf-toggle-scenestate h3');
+        $h3.find('.sf-dm-on-dot').remove();
+        if (on) $h3.append('<span class="sf-dm-on-dot"></span>');
+    });
+    $body.on('input' + NS, '.sf-ss-input', function () {
+        setSceneStateField($(this).data('ss'), $(this).val());
+    });
+    $body.on('input' + NS, '#sf-ss-depth', function () {
+        getSettings().ssDepth = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 10);
+        saveSettings();
+        syncSceneStateInjection();
+    });
+    $body.on('change' + NS, '#sf-ss-auto', function () {
+        getSettings().ssAuto = $(this).is(':checked');
+        saveSettings();
+    });
+    $body.on('click' + NS, '#sf-ss-refresh', () => {
+        ssAutoRefresh({ silent: false });
+    });
+    $body.on('click' + NS, '#sf-ss-clear', async () => {
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('ss.clearTitle'), t('ss.clearBody'));
+        if (confirmed) { ssResetForChat(); }
+    });
+}
+
 function refreshPopupContent() {
     const container = $('.storyforge-popup');
     if (!container.length) return;
@@ -1984,6 +2488,12 @@ function refreshPopupContent() {
 
     // Rebind director
     bindDirector();
+
+    // Rebind plot threads
+    bindPlotThreads();
+
+    // Rebind scene state
+    bindSceneState();
 }
 
 // ==== Menu ====
@@ -4270,7 +4780,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.8.0 (lingering consequences)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.9.0 (plot threads, keyword reminders, scene state)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -4312,17 +4822,36 @@ jQuery(async () => {
             // Director Mode: consume the just-used event, tick cooldowns, maybe
             // roll a new one for the next reply.
             try { dmOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] director`, e); }
+            // Plot Threads: tick the per-chat age clock + consume fired one-shots.
+            try { ptOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] plot threads`, e); }
+            // Story State: auto-refresh from chat if enabled.
+            try { ssOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] scene state`, e); }
         });
         // New chat = fresh cycle: reset counters and disarm every-N reminders.
         eventSource.on(event_types.CHAT_CHANGED, () => {
             try { resetReminderCounters(); syncReminderInjections(false); } catch { /* ignore */ }
             // Director pacing is per-chat: drop queued events and cooldowns.
             try { dmResetState(); } catch { /* ignore */ }
+            // Plot Threads age is per-chat too.
+            try { ptResetForChat(); } catch { /* ignore */ }
+            // Scene state is per-conversation.
+            try { ssResetForChat(); } catch { /* ignore */ }
         });
+        // Re-evaluate keyword-triggered ('match') reminders just before a
+        // generation starts, so a keyword in the user's just-sent message can
+        // fire its reminder for THIS reply (not only the next one). No counter
+        // advance — this is a pure pattern re-check.
+        try {
+            eventSource.on(event_types.GENERATION_STARTED, () => {
+                try { syncReminderInjections(false); } catch { /* ignore */ }
+            });
+        } catch { /* event not present on this build */ }
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
+        // Prime the scene-state block on load.
+        try { syncSceneStateInjection(); } catch (e) { console.error(`[${MODULE_NAME}] scene state init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.8.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.9.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
