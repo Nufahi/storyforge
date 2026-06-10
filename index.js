@@ -450,10 +450,31 @@ const defaultSettings = Object.freeze({
     ccConseqTtl: 3,              // how many bot replies the consequence lingers (1-20)
     ccConseqEvery: 1,            // inject the consequence every N replies while alive (1-5)
     ccConseqOnlyStrong: false,   // only fire on strong/critical failures, not narrow ones
+    // === Hidden modifiers / stats (lightweight RPG layer) ===
+    // The player defines a few character stats. Each choice's axis maps to a
+    // stat; the stat's value nudges the d100 success chance for that choice.
+    // Everything is opt-in: ccStats master toggle, plus per-stat enabled flag.
+    ccStats: false,              // master toggle for the stat layer
+    ccStatScale: 5,              // percent chance shift per stat point (1-15)
+    ccStatList: null,            // [{ id, name, value (-3..3), enabled, axes:[axis,...] }]
+    ccStatShowBadge: true,       // show the applied modifier on the card/roll
 });
 
 // Folder that holds auto-spawned consequence reminders. Created lazily.
 const CC_CONSEQ_FOLDER_ID = 'folder_consequences';
+
+// Default character stats. Each maps to one or more choice axes; when a card's
+// axis matches, the stat value shifts that card's success chance. Values run
+// -3..+3 (0 = neutral). Players can rename, retune, remap axes, or disable.
+// Built lazily so the names can be localized once i18n has loaded.
+function makeDefaultStats() {
+    return [
+        { id: 'stat_might',   name: t('cc.stat.def.might'),   value: 0, enabled: true, axes: ['confront'] },
+        { id: 'stat_guile',   name: t('cc.stat.def.guile'),   value: 0, enabled: true, axes: ['probe', 'disrupt'] },
+        { id: 'stat_charm',   name: t('cc.stat.def.charm'),   value: 0, enabled: true, axes: ['cooperate', 'shift'] },
+        { id: 'stat_finesse', name: t('cc.stat.def.finesse'), value: 0, enabled: true, axes: ['act'] },
+    ];
+}
 
 // Models that the user has fetched once via "Fetch models" — cached in memory
 // only (not persisted) so the dropdown doesn't have to refetch every render.
@@ -2872,6 +2893,10 @@ function ccGetSettings() {
     s.ccConseqOnlyStrong = s.ccConseqOnlyStrong === true;
     s.ccConseqTtl = Math.min(Math.max(parseInt(s.ccConseqTtl, 10) || 3, 1), 20);
     s.ccConseqEvery = Math.min(Math.max(parseInt(s.ccConseqEvery, 10) || 1, 1), 5);
+    // Hidden modifiers / stats.
+    s.ccStats = s.ccStats === true;
+    s.ccStatShowBadge = s.ccStatShowBadge !== false;
+    s.ccStatScale = Math.min(Math.max(parseInt(s.ccStatScale, 10) || 5, 1), 15);
     return s;
 }
 
@@ -2913,6 +2938,63 @@ function ccRiskChance(risk) {
         case 'high': return s.ccChanceHigh;
         default: return null; // no risk tag → no dice
     }
+}
+
+// ==== Hidden modifiers / stats =============================================
+
+function getStatList() {
+    const s = getSettings();
+    if (!Array.isArray(s.ccStatList)) s.ccStatList = makeDefaultStats();
+    return s.ccStatList;
+}
+
+function addStat() {
+    const list = getStatList();
+    if (list.length >= 8) return null;
+    const id = makeId('stat');
+    list.push({ id, name: t('cc.stat.newName'), value: 0, enabled: true, axes: [] });
+    saveSettings();
+    return id;
+}
+
+function updateStat(id, data) {
+    const st = getStatList().find(x => x.id === id);
+    if (!st) return;
+    if (typeof data.name === 'string') st.name = data.name.slice(0, 30);
+    if (Number.isFinite(data.value)) st.value = Math.min(Math.max(Math.round(data.value), -3), 3);
+    if (typeof data.enabled === 'boolean') st.enabled = data.enabled;
+    if (Array.isArray(data.axes)) st.axes = data.axes.filter(a => CC_AXES.includes(a));
+    saveSettings();
+}
+
+function deleteStat(id) {
+    const s = getSettings();
+    s.ccStatList = getStatList().filter(x => x.id !== id);
+    saveSettings();
+}
+
+function resetStats() {
+    getSettings().ccStatList = makeDefaultStats();
+    saveSettings();
+}
+
+// Compute the chance modifier (percent, may be negative) a choice's axis earns
+// from the player's stats. Returns { delta, stat } where stat is the matching
+// stat object (for display) or null. Honors the master + per-stat toggles.
+function ccStatModifier(choice) {
+    const s = ccGetSettings();
+    if (!s.ccStats || !choice || !choice.axis) return { delta: 0, stat: null };
+    const scale = Math.min(Math.max(parseInt(s.ccStatScale, 10) || 5, 1), 15);
+    // First enabled stat whose axes include this choice's axis wins.
+    for (const st of getStatList()) {
+        if (!st.enabled) continue;
+        if (Array.isArray(st.axes) && st.axes.includes(choice.axis)) {
+            const v = Math.min(Math.max(st.value | 0, -3), 3);
+            if (v === 0) return { delta: 0, stat: st };
+            return { delta: v * scale, stat: st };
+        }
+    }
+    return { delta: 0, stat: null };
 }
 
 // Default prompt templates. Exposed as constants so the settings panel can
@@ -3789,8 +3871,11 @@ function ccAppendCharSection(charChoices) {
 // Roll a percentile check for a choice's risk tier. Returns a structured
 // result object, or null if the choice has no rollable risk.
 function ccRollChoice(choice) {
-    const chance = ccRiskChance(choice.risk);
-    if (!Number.isFinite(chance) || chance >= 100) return null;
+    const baseChance = ccRiskChance(choice.risk);
+    if (!Number.isFinite(baseChance) || baseChance >= 100) return null;
+    // Apply the hidden stat modifier (0 when the layer is off / no match).
+    const mod = ccStatModifier(choice);
+    const chance = Math.min(Math.max(baseChance + mod.delta, 1), 99);
     // d100, 1..100. Roll <= chance == success. Lower roll = better.
     const roll = Math.floor(Math.random() * 100) + 1;
     const success = roll <= chance;
@@ -3800,7 +3885,12 @@ function ccRollChoice(choice) {
     else if (roll === 100) degree = 'crit-fail';
     else if (success) degree = (chance - roll) >= 30 ? 'strong-success' : 'success';
     else degree = (roll - chance) >= 30 ? 'strong-fail' : 'fail';
-    return { roll, chance, success, degree, risk: choice.risk };
+    return {
+        roll, chance, success, degree, risk: choice.risk,
+        baseChance,
+        statDelta: mod.delta,
+        statName: mod.stat ? mod.stat.name : '',
+    };
 }
 
 // Build the OOC line that tells the main model how the attempt resolved, so
@@ -3818,8 +3908,21 @@ function ccBuildRollOoc(choice, result) {
         .replace(/[[\]]/g, '')
         .trim()
         .slice(0, CC_MAX_NAME);
+    // When a stat shifted the odds, surface it so the model can flavor the
+    // outcome ("your Might carried the blow"). Sanitize the stat name (player
+    // text) so it can't break out of the OOC wrapper.
+    let statTxt = '';
+    if (result.statDelta) {
+        const safeStat = String(result.statName || '')
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .replace(/[[\]]/g, '')
+            .trim()
+            .slice(0, 30);
+        const sign = result.statDelta > 0 ? '+' : '';
+        statTxt = ` ${t('cc.roll.ooc.stat', { stat: safeStat, mod: `${sign}${result.statDelta}`, base: result.baseChance })}`;
+    }
     return `[OOC: ${t('cc.roll.ooc.attempt', { action: safeAction })} ` +
-        `d100=${result.roll} vs ${result.chance}% → ${outcome} (${degreeTxt}). ` +
+        `d100=${result.roll} vs ${result.chance}%${statTxt} → ${outcome} (${degreeTxt}). ` +
         `${t('cc.roll.ooc.instruct')}]`;
 }
 
@@ -4402,6 +4505,30 @@ function ccHideModelDropdown(panel) {
     panel.find('#sf-cc-model-dropdown').attr('hidden', true);
 }
 
+// Build the per-stat editor rows (name, value, axis checkboxes, enable/delete).
+function buildCcStatsRows() {
+    const stats = getStatList();
+    return stats.map(st => {
+        const id = escapeHtml(st.id);
+        const axisChecks = CC_AXES.map(ax => {
+            const on = Array.isArray(st.axes) && st.axes.includes(ax);
+            return `<label class="sf-cc-stat-axis" title="${escapeHtml(t('cc.axis.' + ax))}">
+                <input type="checkbox" class="sf-cc-stat-axis-cb" data-stat="${id}" data-axis="${ax}" ${on ? 'checked' : ''}>
+                <i class="fa-solid ${escapeHtml(CC_AXIS_ICON[ax] || 'fa-circle')}"></i>
+            </label>`;
+        }).join('');
+        return `<div class="sf-cc-stat-row" data-stat="${id}">
+            <div class="sf-cc-stat-top">
+                <input type="checkbox" class="sf-cc-stat-enabled" data-stat="${id}" ${st.enabled ? 'checked' : ''} title="${escapeHtml(t('cc.stat.statEnable'))}">
+                <input type="text" class="sf-cc-stat-name" data-stat="${id}" maxlength="30" value="${escapeHtml(st.name || '')}" placeholder="${escapeHtml(t('cc.stat.newName'))}">
+                <input type="number" class="sf-cc-stat-value" data-stat="${id}" min="-3" max="3" value="${escapeHtml(String(st.value ?? 0))}" title="${escapeHtml(t('cc.stat.valueHint'))}">
+                <span class="sf-cc-stat-del fa-solid fa-xmark" data-stat="${id}" title="${escapeHtml(t('common.delete'))}"></span>
+            </div>
+            <div class="sf-cc-stat-axes" title="${escapeHtml(t('cc.stat.axesHint'))}">${axisChecks}</div>
+        </div>`;
+    }).join('');
+}
+
 function ccAddSettingsPanel() {
     if ($('#sf-cc-panel').length) return;
     const s = ccGetSettings();
@@ -4604,6 +4731,26 @@ function ccAddSettingsPanel() {
                             </div>
                         </div>
                     </div>
+                    <div class="sf-qi-option-row sf-cc-stats-head">
+                        <input type="checkbox" id="sf-cc-stats" ${s.ccStats ? 'checked' : ''}>
+                        <label for="sf-cc-stats">${tHtml('cc.stat.enable')}</label>
+                    </div>
+                    <div class="sf-cc-stats-block" style="${s.ccStats ? '' : 'display:none'}">
+                        <div class="sf-qi-info sf-qi-sub">${tHtml('cc.stat.hint')}</div>
+                        <div class="sf-cc-form-row">
+                            <label for="sf-cc-stat-scale">${tHtml('cc.stat.scale')}</label>
+                            <input type="number" id="sf-cc-stat-scale" min="1" max="15" value="${s.ccStatScale}">
+                        </div>
+                        <div class="sf-qi-option-row">
+                            <input type="checkbox" id="sf-cc-stat-badge" ${s.ccStatShowBadge ? 'checked' : ''}>
+                            <label for="sf-cc-stat-badge">${tHtml('cc.stat.showBadge')}</label>
+                        </div>
+                        <div id="sf-cc-stats-list">${buildCcStatsRows()}</div>
+                        <div class="sf-cc-stats-actions">
+                            <button class="sf-ss-btn" id="sf-cc-stat-add"><i class="fa-solid fa-plus"></i> ${tHtml('cc.stat.add')}</button>
+                            <button class="sf-ss-btn sf-ss-clear" id="sf-cc-stat-reset"><i class="fa-solid fa-arrow-rotate-left"></i> ${tHtml('cc.stat.reset')}</button>
+                        </div>
+                    </div>
                     <div class="sf-cc-form-row">
                         <label for="sf-cc-duomode">${tHtml('cc.duoMode')}</label>
                         <select id="sf-cc-duomode">
@@ -4746,6 +4893,50 @@ function ccAddSettingsPanel() {
     panel.on('input', '#sf-cc-conseq-every', function () {
         ccGetSettings().ccConseqEvery = Math.min(Math.max(parseInt($(this).val(), 10) || 1, 1), 5);
         saveSettings();
+    });
+    // --- Hidden modifiers / stats ---
+    panel.on('change', '#sf-cc-stats', function () {
+        const on = $(this).prop('checked');
+        ccGetSettings().ccStats = on;
+        saveSettings();
+        panel.find('.sf-cc-stats-block').toggle(on);
+    });
+    panel.on('input', '#sf-cc-stat-scale', function () {
+        ccGetSettings().ccStatScale = Math.min(Math.max(parseInt($(this).val(), 10) || 5, 1), 15);
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-stat-badge', function () {
+        ccGetSettings().ccStatShowBadge = $(this).prop('checked');
+        saveSettings();
+    });
+    const rerenderStats = () => { panel.find('#sf-cc-stats-list').html(buildCcStatsRows()); };
+    panel.on('click', '#sf-cc-stat-add', () => { addStat(); rerenderStats(); });
+    panel.on('click', '#sf-cc-stat-reset', async () => {
+        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('cc.stat.resetTitle'), t('cc.stat.resetBody'));
+        if (confirmed) { resetStats(); rerenderStats(); }
+    });
+    panel.on('change', '.sf-cc-stat-enabled', function () {
+        updateStat($(this).data('stat'), { enabled: $(this).prop('checked') });
+    });
+    panel.on('input', '.sf-cc-stat-name', function () {
+        updateStat($(this).data('stat'), { name: $(this).val() });
+    });
+    panel.on('input', '.sf-cc-stat-value', function () {
+        updateStat($(this).data('stat'), { value: parseInt($(this).val(), 10) });
+    });
+    panel.on('change', '.sf-cc-stat-axis-cb', function () {
+        const id = $(this).data('stat');
+        const st = getStatList().find(x => x.id === id);
+        if (!st) return;
+        const axes = [];
+        panel.find(`.sf-cc-stat-axis-cb[data-stat="${id}"]`).each(function () {
+            if ($(this).prop('checked')) axes.push($(this).data('axis'));
+        });
+        updateStat(id, { axes });
+    });
+    panel.on('click', '.sf-cc-stat-del', function () {
+        deleteStat($(this).data('stat'));
+        rerenderStats();
     });
     panel.on('change', '#sf-cc-duomode', function () {
         const v = $(this).val();
@@ -5011,7 +5202,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.10.0 (per-chat reminders, auto plot-thread detection)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.11.0 (hidden stat modifiers)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -5084,7 +5275,7 @@ jQuery(async () => {
         // Prime the scene-state block on load.
         try { syncSceneStateInjection(); } catch (e) { console.error(`[${MODULE_NAME}] scene state init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.10.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.11.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

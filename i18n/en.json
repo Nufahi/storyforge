@@ -324,6 +324,7 @@
   "cc.roll.ooc.success": "SUCCESS",
   "cc.roll.ooc.fail": "FAILURE",
   "cc.roll.ooc.instruct": "Write the next reply so the outcome of this attempt matches the roll — do not silently grant a failed action, and let success or failure shape the consequences.",
+  "cc.roll.ooc.stat": "({{stat}} {{mod}} from base {{base}}%)",
   "cc.roll.degree.crit-success": "critical success",
   "cc.roll.degree.strong-success": "decisive success",
   "cc.roll.degree.success": "narrow success",
@@ -344,5 +345,22 @@
   "cc.conseq.askTitle": "Lingering consequence",
   "cc.conseq.askBody": "Describe the fallout of this failed action. It will be reminded to the model for a few replies, then fade.",
   "cc.conseq.prompt": "[Consequence] The recent attempt to \"{{action}}\" failed. Keep its aftermath present and consistent in the scene until it is resolved or naturally fades.",
-  "cc.conseq.promptStrong": "[Consequence] The recent attempt to \"{{action}}\" failed badly. Its painful aftermath should clearly affect {{char}} and the scene for now \u2014 do not gloss over it or let it vanish."
+  "cc.conseq.promptStrong": "[Consequence] The recent attempt to \"{{action}}\" failed badly. Its painful aftermath should clearly affect {{char}} and the scene for now \u2014 do not gloss over it or let it vanish.",
+
+  "cc.stat.enable": "Hidden modifiers (stats)",
+  "cc.stat.hint": "Give your character a few stats. Each maps to one or more choice axes; the stat value nudges the dice odds for matching cards (e.g. high Might helps confront actions).",
+  "cc.stat.scale": "% per point:",
+  "cc.stat.showBadge": "Show the applied modifier on rolls",
+  "cc.stat.add": "Add stat",
+  "cc.stat.reset": "Reset",
+  "cc.stat.newName": "New stat",
+  "cc.stat.statEnable": "Use this stat",
+  "cc.stat.valueHint": "Stat value, -3 to +3 (0 = neutral)",
+  "cc.stat.axesHint": "Which choice axes this stat applies to",
+  "cc.stat.resetTitle": "Reset stats",
+  "cc.stat.resetBody": "Restore the default stat set (Might / Guile / Charm / Finesse)?",
+  "cc.stat.def.might": "Might",
+  "cc.stat.def.guile": "Guile",
+  "cc.stat.def.charm": "Charm",
+  "cc.stat.def.finesse": "Finesse"
 }
