@@ -309,7 +309,21 @@ const defaultSettings = Object.freeze({
     ccChanceLow: 85,
     ccChanceMedium: 60,
     ccChanceHigh: 35,
+    // === Lingering consequences ===
+    // When a dice roll FAILS, optionally spawn a temporary reminder ("hurt arm
+    // after the fall...") that auto-injects for a few replies, then dies. This
+    // gives failed rolls weight beyond a single turn. The reminder text is
+    // written by the player per-card via a small prompt, or auto-derived from
+    // the action label when ccConseqAuto is on.
+    ccConseq: false,             // master toggle for consequence reminders
+    ccConseqAuto: false,         // skip the prompt, auto-generate text from the action
+    ccConseqTtl: 3,              // how many bot replies the consequence lingers (1-20)
+    ccConseqEvery: 1,            // inject the consequence every N replies while alive (1-5)
+    ccConseqOnlyStrong: false,   // only fire on strong/critical failures, not narrow ones
 });
+
+// Folder that holds auto-spawned consequence reminders. Created lazily.
+const CC_CONSEQ_FOLDER_ID = 'folder_consequences';
 
 // Models that the user has fetched once via "Fetch models" — cached in memory
 // only (not persisted) so the dropdown doesn't have to refetch every render.
@@ -556,6 +570,79 @@ function deleteReminder(remId) {
     saveSettings();
 }
 
+// ==== Lingering consequences (Choice Cards → temporary reminders) ===========
+// When a dice roll fails, spawn a self-expiring reminder that keeps the model
+// honest about the fallout for a few replies. Implemented entirely on top of
+// the existing reminder engine: an ephemeral reminder (carries a numeric `ttl`)
+// lives in a dedicated folder and is auto-deleted when its TTL runs out.
+
+function getConsequenceFolder() {
+    const folders = getReminderFolders();
+    let folder = folders.find(f => f.id === CC_CONSEQ_FOLDER_ID);
+    if (!folder) {
+        folder = { id: CC_CONSEQ_FOLDER_ID, name: t('cc.conseq.folderName'), collapsed: false, reminders: [] };
+        folders.push(folder);
+    }
+    return folder;
+}
+
+// Build the reminder text for a failed action. The action label is
+// LLM-generated, so sanitize it the same way the OOC builder does (strip
+// brackets / control chars / fences) before interpolating.
+function buildConsequencePrompt(choice, result) {
+    const safeAction = String(choice?.name || '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/[[\]]/g, '')
+        .replace(/```+/g, '')
+        .trim()
+        .slice(0, CC_MAX_NAME);
+    const strong = result && /strong|crit/.test(result.degree || '');
+    const key = strong ? 'cc.conseq.promptStrong' : 'cc.conseq.prompt';
+    return t(key, { action: safeAction || t('common.tool') });
+}
+
+// Create (and immediately arm) a consequence reminder. `text` may be empty to
+// fall back to the auto-derived prompt. Returns the new reminder id or null.
+function spawnConsequenceReminder(choice, result, text) {
+    const s = ccGetSettings();
+    const prompt = (typeof text === 'string' && text.trim())
+        ? text.trim().slice(0, MAX_REMINDER_FIELD_LEN)
+        : buildConsequencePrompt(choice, result);
+    if (!prompt) return null;
+
+    const folder = getConsequenceFolder();
+    const ttl = Math.min(Math.max(parseInt(s.ccConseqTtl, 10) || 3, 1), 20);
+    const every = Math.min(Math.max(parseInt(s.ccConseqEvery, 10) || 1, 1), 5);
+    const label = String(choice?.name || t('cc.conseq.defaultLabel'))
+        .replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60) || t('cc.conseq.defaultLabel');
+
+    const id = makeId('rem');
+    folder.reminders.push({
+        id,
+        label,
+        enabled: true,
+        collapsed: true,
+        mode: every > 1 ? 'every' : 'always',
+        interval: every,
+        depth: 1,
+        role: 'system',
+        prompt,
+        ttl,            // marks this reminder ephemeral; ticks down per bot reply
+        ephemeral: true,
+    });
+    saveSettings();
+    // Prime the injection now (don't advance TTL) so it's in context for the
+    // very next generation.
+    syncReminderInjections(false);
+    if (s.ccConseq && getSettings().dmNotify !== false) {
+        toastr.info(t('cc.conseq.spawned', { name: label, n: ttl }), t('cc.conseq.toastTitle'),
+            { timeOut: 3500, escapeHtml: true });
+    }
+    if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
+    return id;
+}
+
+
 // ==== Reminders: injection engine ==========================================
 
 function clearReminderInjection(remId) {
@@ -586,6 +673,27 @@ function syncReminderInjections(advance = false) {
         // Master toggle off: strip every reminder injection.
         for (const { reminder } of getAllReminders()) clearReminderInjection(reminder.id);
         return;
+    }
+    // TTL pass (only on a real bot reply). Ephemeral reminders carry a numeric
+    // `ttl` = bot replies left to live. Decrement here; when it hits 0 the
+    // reminder is deleted entirely. Collect first, mutate after, so we never
+    // delete while iterating the live folder arrays.
+    if (advance) {
+        const expired = [];
+        for (const { reminder } of getAllReminders()) {
+            if (!Number.isFinite(reminder.ttl)) continue;
+            // Only tick TTL while the reminder is active; a disabled ephemeral
+            // reminder is frozen (lets the user pause a consequence).
+            if (!reminder.enabled) continue;
+            reminder.ttl -= 1;
+            if (reminder.ttl <= 0) expired.push(reminder.id);
+        }
+        for (const id of expired) deleteReminder(id);
+        if (expired.length) {
+            saveSettings();
+            // Reflect removal in an open popup.
+            if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
+        }
     }
     for (const { reminder } of getAllReminders()) {
         if (!reminder.enabled || !reminder.prompt?.trim()) {
@@ -1324,13 +1432,19 @@ function updateReminderBadge() {
 
 function reminderStatusText(rem) {
     if (!rem.enabled || !rem.prompt?.trim()) return t('rem.status.off');
-    if (rem.mode === 'always') return t('rem.status.always');
+    // Ephemeral consequence: show remaining lifespan alongside its cadence.
+    let ttlTag = '';
+    if (Number.isFinite(rem.ttl)) {
+        ttlTag = ' · ' + t('rem.status.ttl', { n: Math.max(0, rem.ttl) });
+    }
+    if (rem.mode === 'always') return t('rem.status.always') + ttlTag;
     const interval = Math.max(1, rem.interval || 1);
     const count = reminderCounters.get(rem.id) || 0;
     const remaining = Math.max(0, interval - count);
-    return remaining === 0
+    const base = remaining === 0
         ? t('rem.status.armed')
         : t('rem.status.inN', { n: remaining });
+    return base + ttlTag;
 }
 
 // ==== Popup ====
@@ -1351,7 +1465,8 @@ function buildRemindersHtml() {
             // Reminders default to collapsed (only the head row shows) to keep
             // the panel compact, especially on mobile. Tap the row to expand.
             const isOpen = rem.collapsed === false;
-            return `<div class="sf-reminder${isOpen ? ' open' : ''}" data-rem="${rid}">
+            const ephClass = (rem.ephemeral || Number.isFinite(rem.ttl)) ? ' sf-rem-ephemeral' : '';
+            return `<div class="sf-reminder${isOpen ? ' open' : ''}${ephClass}" data-rem="${rid}">
                 <div class="sf-reminder-head" data-rem="${rid}">
                     <i class="fa-solid fa-chevron-right sf-rem-toggle" data-rem="${rid}"></i>
                     <input type="checkbox" class="sf-rem-enabled" data-rem="${rid}" ${rem.enabled ? 'checked' : ''} title="${escapeHtml(t('rem.enable'))}">
@@ -2010,6 +2125,12 @@ function ccGetSettings() {
     s.ccChanceLow = clampPct(s.ccChanceLow, 85);
     s.ccChanceMedium = clampPct(s.ccChanceMedium, 60);
     s.ccChanceHigh = clampPct(s.ccChanceHigh, 35);
+    // Lingering consequences.
+    s.ccConseq = s.ccConseq === true;
+    s.ccConseqAuto = s.ccConseqAuto === true;
+    s.ccConseqOnlyStrong = s.ccConseqOnlyStrong === true;
+    s.ccConseqTtl = Math.min(Math.max(parseInt(s.ccConseqTtl, 10) || 3, 1), 20);
+    s.ccConseqEvery = Math.min(Math.max(parseInt(s.ccConseqEvery, 10) || 1, 1), 5);
     return s;
 }
 
@@ -2961,6 +3082,41 @@ function ccBuildRollOoc(choice, result) {
         `${t('cc.roll.ooc.instruct')}]`;
 }
 
+// Decide whether a failed roll should spawn a lingering consequence reminder,
+// and either auto-create it or prompt the player for the fallout text.
+async function maybeSpawnConsequence(choice, result) {
+    const s = ccGetSettings();
+    if (!s.ccConseq) return;
+    if (!result || result.success) return;       // only failures linger
+    if (s.ccConseqOnlyStrong && !/strong|crit/.test(result.degree || '')) return;
+
+    if (s.ccConseqAuto) {
+        spawnConsequenceReminder(choice, result, '');
+        return;
+    }
+
+    // Ask the player for the consequence text, pre-filled with the auto-derived
+    // suggestion so they can accept it with one tap on mobile.
+    const ctx = SillyTavern.getContext();
+    const { Popup, POPUP_TYPE } = ctx;
+    const suggestion = buildConsequencePrompt(choice, result);
+    let text;
+    try {
+        text = await Popup.show.input(
+            t('cc.conseq.askTitle'),
+            t('cc.conseq.askBody'),
+            suggestion,
+            { rows: 3 },
+        );
+    } catch {
+        text = suggestion; // popup unavailable on some builds: fall back to auto
+    }
+    // null / empty = player cancelled → no consequence.
+    if (text === null || text === undefined) return;
+    if (!String(text).trim()) return;
+    spawnConsequenceReminder(choice, result, String(text));
+}
+
 function ccApplyUserChoice(choice, { suppressSend = false, extra = '' } = {}) {
     const s = ccGetSettings();
     const $textarea = $('#send_textarea');
@@ -3257,7 +3413,7 @@ function ccBindCardEvents() {
 
     // Dice roll button. Must run before (and instead of) the card click so a
     // roll never accidentally also inserts the plain action.
-    $(document).on('click.sf-cc-roll', '.sf-cc-roll', function (e) {
+    $(document).on('click.sf-cc-roll', '.sf-cc-roll', async function (e) {
         e.preventDefault();
         e.stopPropagation();
         const $card = $(this).closest('.sf-cc-card');
@@ -3289,6 +3445,14 @@ function ccBindCardEvents() {
             t('app'),
             { timeOut: 3000 }
         );
+
+        // Lingering consequence on a failed roll. Optionally restricted to
+        // strong/critical failures, optionally auto-derived from the action.
+        try {
+            await maybeSpawnConsequence(choice, result);
+        } catch (err) {
+            console.warn(`[${MODULE_NAME}] consequence spawn failed`, err);
+        }
     });
 
     $(document).on('click.sf-cc', '.sf-cc-card', function (e) {
@@ -3675,6 +3839,29 @@ function ccAddSettingsPanel() {
                             <label for="sf-cc-chance-high">${tHtml('cc.mech.chanceHigh')}</label>
                             <input type="number" id="sf-cc-chance-high" min="0" max="100" value="${s.ccChanceHigh}">
                         </div>
+                        <div class="sf-qi-option-row sf-cc-conseq-head">
+                            <input type="checkbox" id="sf-cc-conseq" ${s.ccConseq ? 'checked' : ''}>
+                            <label for="sf-cc-conseq">${tHtml('cc.conseq.enable')}</label>
+                        </div>
+                        <div class="sf-cc-conseq-block" style="${s.ccConseq ? '' : 'display:none'}">
+                            <div class="sf-qi-info sf-qi-sub">${tHtml('cc.conseq.hint')}</div>
+                            <div class="sf-qi-option-row">
+                                <input type="checkbox" id="sf-cc-conseq-auto" ${s.ccConseqAuto ? 'checked' : ''}>
+                                <label for="sf-cc-conseq-auto">${tHtml('cc.conseq.auto')}</label>
+                            </div>
+                            <div class="sf-qi-option-row">
+                                <input type="checkbox" id="sf-cc-conseq-strong" ${s.ccConseqOnlyStrong ? 'checked' : ''}>
+                                <label for="sf-cc-conseq-strong">${tHtml('cc.conseq.onlyStrong')}</label>
+                            </div>
+                            <div class="sf-cc-form-row">
+                                <label for="sf-cc-conseq-ttl">${tHtml('cc.conseq.ttl')}</label>
+                                <input type="number" id="sf-cc-conseq-ttl" min="1" max="20" value="${s.ccConseqTtl}">
+                            </div>
+                            <div class="sf-cc-form-row">
+                                <label for="sf-cc-conseq-every">${tHtml('cc.conseq.every')}</label>
+                                <input type="number" id="sf-cc-conseq-every" min="1" max="5" value="${s.ccConseqEvery}">
+                            </div>
+                        </div>
                     </div>
                     <div class="sf-cc-form-row">
                         <label for="sf-cc-duomode">${tHtml('cc.duoMode')}</label>
@@ -3795,6 +3982,28 @@ function ccAddSettingsPanel() {
     });
     panel.on('input', '#sf-cc-chance-high', function () {
         ccGetSettings().ccChanceHigh = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 100);
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-conseq', function () {
+        const on = $(this).prop('checked');
+        ccGetSettings().ccConseq = on;
+        saveSettings();
+        panel.find('.sf-cc-conseq-block').toggle(on);
+    });
+    panel.on('change', '#sf-cc-conseq-auto', function () {
+        ccGetSettings().ccConseqAuto = $(this).prop('checked');
+        saveSettings();
+    });
+    panel.on('change', '#sf-cc-conseq-strong', function () {
+        ccGetSettings().ccConseqOnlyStrong = $(this).prop('checked');
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-conseq-ttl', function () {
+        ccGetSettings().ccConseqTtl = Math.min(Math.max(parseInt($(this).val(), 10) || 1, 1), 20);
+        saveSettings();
+    });
+    panel.on('input', '#sf-cc-conseq-every', function () {
+        ccGetSettings().ccConseqEvery = Math.min(Math.max(parseInt($(this).val(), 10) || 1, 1), 5);
         saveSettings();
     });
     panel.on('change', '#sf-cc-duomode', function () {
@@ -4061,7 +4270,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.7.0 (director mode)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.8.0 (lingering consequences)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -4113,7 +4322,7 @@ jQuery(async () => {
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.7.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.8.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

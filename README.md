@@ -71,6 +71,20 @@ Slash commands: `/sf-director` (toggle), `/sf-direct` (force an event).
 
 ---
 
+## Lingering Consequences (Choice Cards)
+
+Turn a failed dice roll into a story that *remembers*. When a Choice Card roll fails, StoryForge can spawn a **temporary reminder** — "hurt arm after the fall", "the guard now distrusts you" — that auto-injects into context for a few replies, then quietly expires. No other ST extension carries failure forward like this.
+
+- **On / off** per failure, with a per-card prompt (write the fallout yourself) or **auto mode** (derived from the action)
+- **Lifespan** — how many bot replies the consequence lingers (then it auto-deletes itself)
+- **Inject every N replies** while alive, to save tokens
+- **Only on strong / critical failures** — narrow misses stay light
+- Consequences live in a dedicated *Consequences* reminder folder with a red tint and a countdown (`2 left`); delete one early any time
+
+Built entirely on top of the Reminders engine — consequences are just self-expiring reminders, so depth/role/folder management all work the same way.
+
+---
+
 ## Installation
 
 ### SillyTavern built-in installer (recommended)

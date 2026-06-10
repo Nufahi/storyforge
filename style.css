@@ -437,6 +437,24 @@
     font-size: 10px; color: var(--SmartThemeQuoteColor, #999); margin-left: 4px;
 }
 .sf-dm-cd-left i { font-size: 9px; width: auto; }
+
+/* === Lingering consequences (Choice Cards) === */
+.sf-cc-conseq-head { margin-top: 8px; }
+.sf-cc-conseq-block {
+    margin: 4px 0 6px; padding: 8px 10px;
+    border-left: 2px solid rgba(255,107,107,.4);
+    border-radius: 0 6px 6px 0;
+    background: rgba(255,107,107,.05);
+}
+/* Ephemeral consequence reminders get a faint red tint + hourglass so the
+   player can tell them apart from permanent reminders in the folder list. */
+.sf-reminder.sf-rem-ephemeral {
+    border-color: rgba(255,107,107,.35);
+    background: rgba(255,107,107,.04);
+}
+.sf-reminder.sf-rem-ephemeral .sf-reminder-status {
+    color: #e88; background: rgba(255,107,107,.1);
+}
 .sf-dm-tool-opt {
     display: flex; align-items: center; gap: 5px;
     font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);

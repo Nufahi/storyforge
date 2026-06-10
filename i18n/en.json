@@ -67,6 +67,8 @@
   "rem.status.armed": "next reply",
   "rem.status.inN": "in {{n}}",
 
+  "rem.status.ttl": "{{n}} left",
+
   "dm.section.title": "Director Mode",
   "dm.intro": "An autonomous co-narrator. After each reply the director rolls the dice and may secretly queue one of your story tools for the next response — random events, twists and new faces keep the story alive without you pressing anything.",
   "dm.enable": "Enable Director Mode",
@@ -267,5 +269,20 @@
   "cc.roll.degree.success": "narrow success",
   "cc.roll.degree.fail": "narrow failure",
   "cc.roll.degree.strong-fail": "clear failure",
-  "cc.roll.degree.crit-fail": "critical failure"
+  "cc.roll.degree.crit-fail": "critical failure",
+
+  "cc.conseq.enable": "Lingering consequences on failure",
+  "cc.conseq.hint": "When a roll fails, spawn a temporary reminder (\"hurt arm after the fall...\") that the model must honor for a few replies, then it auto-expires.",
+  "cc.conseq.auto": "Auto-write consequence (skip the prompt)",
+  "cc.conseq.onlyStrong": "Only on strong / critical failures",
+  "cc.conseq.ttl": "Lifespan (bot replies):",
+  "cc.conseq.every": "Inject every N replies:",
+  "cc.conseq.folderName": "Consequences",
+  "cc.conseq.defaultLabel": "Consequence",
+  "cc.conseq.toastTitle": "Consequence",
+  "cc.conseq.spawned": "Consequence active: {{name}} ({{n}} replies)",
+  "cc.conseq.askTitle": "Lingering consequence",
+  "cc.conseq.askBody": "Describe the fallout of this failed action. It will be reminded to the model for a few replies, then fade.",
+  "cc.conseq.prompt": "[Consequence] The recent attempt to \"{{action}}\" failed. Keep its aftermath present and consistent in the scene until it is resolved or naturally fades.",
+  "cc.conseq.promptStrong": "[Consequence] The recent attempt to \"{{action}}\" failed badly. Its painful aftermath should clearly affect {{char}} and the scene for now \u2014 do not gloss over it or let it vanish."
 }
