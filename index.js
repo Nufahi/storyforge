@@ -239,6 +239,91 @@ const reminderCounters = new Map();
 // instead of disarming it before it has a chance to be sent.
 const reminderArmed = new Set();
 
+// ==== Per-chat reminder state (chat metadata) ==============================
+// Chat-only reminders persist their every-N counter / armed flag in the chat's
+// own metadata (ctx.chatMetadata), so the cadence survives reloads and chat
+// switches instead of resetting. Global reminders keep using the in-memory
+// Maps above. These helpers abstract the difference away from the engine.
+
+const SF_META_KEY = MODULE_NAME; // chatMetadata[MODULE_NAME] = { remCounters, remArmed }
+
+function getChatMeta() {
+    try {
+        const ctx = SillyTavern.getContext();
+        const md = ctx.chatMetadata;
+        if (!md || typeof md !== 'object') return null;
+        if (!md[SF_META_KEY] || typeof md[SF_META_KEY] !== 'object') {
+            md[SF_META_KEY] = { remCounters: {}, remArmed: {} };
+        }
+        const slot = md[SF_META_KEY];
+        if (!slot.remCounters || typeof slot.remCounters !== 'object') slot.remCounters = {};
+        if (!slot.remArmed || typeof slot.remArmed !== 'object') slot.remArmed = {};
+        return slot;
+    } catch { return null; }
+}
+
+function saveChatMeta() {
+    try { SillyTavern.getContext().saveMetadataDebounced?.(); } catch { /* ignore */ }
+}
+
+function currentChatId() {
+    try {
+        const ctx = SillyTavern.getContext();
+        return ctx.getCurrentChatId?.() ?? ctx.chatId ?? null;
+    } catch { return null; }
+}
+
+// Counter accessors that route chat-only reminders through chat metadata.
+function remGetCounter(rem) {
+    if (rem.chatOnly) {
+        const meta = getChatMeta();
+        return meta ? (meta.remCounters[rem.id] || 0) : 0;
+    }
+    return reminderCounters.get(rem.id) || 0;
+}
+function remSetCounter(rem, val) {
+    if (rem.chatOnly) {
+        const meta = getChatMeta();
+        if (meta) { meta.remCounters[rem.id] = val; saveChatMeta(); }
+        return;
+    }
+    reminderCounters.set(rem.id, val);
+}
+function remDeleteCounter(rem) {
+    if (rem.chatOnly) {
+        const meta = getChatMeta();
+        if (meta) { delete meta.remCounters[rem.id]; delete meta.remArmed[rem.id]; saveChatMeta(); }
+        return;
+    }
+    reminderCounters.delete(rem.id);
+    reminderArmed.delete(rem.id);
+}
+function remIsArmed(rem) {
+    if (rem.chatOnly) {
+        const meta = getChatMeta();
+        return meta ? !!meta.remArmed[rem.id] : false;
+    }
+    return reminderArmed.has(rem.id);
+}
+function remSetArmed(rem, on) {
+    if (rem.chatOnly) {
+        const meta = getChatMeta();
+        if (meta) { if (on) meta.remArmed[rem.id] = true; else delete meta.remArmed[rem.id]; saveChatMeta(); }
+        return;
+    }
+    if (on) reminderArmed.add(rem.id); else reminderArmed.delete(rem.id);
+}
+
+// A chat-only reminder is "active here" only when its home chat matches the
+// current one. Global reminders are always active.
+function reminderActiveHere(rem) {
+    if (!rem.chatOnly) return true;
+    const cur = currentChatId();
+    // No home recorded yet (just toggled chatOnly) → adopt the current chat.
+    if (!rem.homeChatId && cur) { rem.homeChatId = cur; saveSettings(); }
+    return !!cur && rem.homeChatId === cur;
+}
+
 const DEFAULT_REMINDER_FOLDERS = [
     {
         id: 'folder_appearance',
@@ -298,6 +383,7 @@ const defaultSettings = Object.freeze({
     // queues a one-shot injection telling the model to resolve that thread.
     plotThreads: null,          // [{ id, text, createdReply, fired }]
     ptFireDepth: 1,             // injection depth when a thread is fired
+    ptAuto: false,              // auto-detect new threads from chat after each reply
     // ==== Story State Tracker ====
     // A compact "scene state" panel (location / time / who's present / open
     // threads) injected as a single always-on reminder so the model stops
@@ -580,7 +666,7 @@ function addReminder(folderId, label, prompt) {
     folder.reminders.push({
         id, label: label || 'Reminder', enabled: false, collapsed: false,
         mode: 'every', interval: 2, depth: 1, role: 'system',
-        prompt: prompt || '', pattern: '', scanLast: 2,
+        prompt: prompt || '', pattern: '', scanLast: 2, chatOnly: false, homeChatId: null,
     });
     saveSettings();
     return id;
@@ -599,6 +685,21 @@ function updateReminder(remId, data) {
     if (data.role in REMINDER_ROLES) r.role = data.role;
     if (typeof data.pattern === 'string') r.pattern = data.pattern.slice(0, MAX_REMINDER_PATTERN_LEN);
     if (Number.isFinite(data.scanLast)) r.scanLast = Math.min(Math.max(Math.floor(data.scanLast), 1), 10);
+    if (typeof data.chatOnly === 'boolean') {
+        r.chatOnly = data.chatOnly;
+        if (data.chatOnly) {
+            // Bind to the current chat. Clear any stale global counter so it
+            // starts fresh in metadata.
+            r.homeChatId = currentChatId() || null;
+            reminderCounters.delete(r.id);
+            reminderArmed.delete(r.id);
+        } else {
+            // Going global again: drop the home binding and any per-chat copy.
+            delete r.homeChatId;
+            const meta = getChatMeta();
+            if (meta) { delete meta.remCounters[r.id]; delete meta.remArmed[r.id]; saveChatMeta(); }
+        }
+    }
     saveSettings();
     // Re-sync injection state immediately so toggling reflects without a reply.
     syncReminderInjections();
@@ -608,6 +709,9 @@ function deleteReminder(remId) {
     clearReminderInjection(remId);
     reminderCounters.delete(remId);
     reminderArmed.delete(remId);
+    // Also drop any per-chat metadata copy of this reminder's counter.
+    const meta = getChatMeta();
+    if (meta) { delete meta.remCounters[remId]; delete meta.remArmed[remId]; saveChatMeta(); }
     for (const folder of getReminderFolders()) {
         const before = (folder.reminders || []).length;
         folder.reminders = (folder.reminders || []).filter(r => r.id !== remId);
@@ -744,13 +848,19 @@ function syncReminderInjections(advance = false) {
     for (const { reminder } of getAllReminders()) {
         if (!reminder.enabled || !reminder.prompt?.trim()) {
             clearReminderInjection(reminder.id);
-            reminderCounters.delete(reminder.id);
-            reminderArmed.delete(reminder.id);
+            remDeleteCounter(reminder);
+            continue;
+        }
+        // Chat-only reminders are dormant outside their home chat: strip the
+        // injection but DON'T touch their persisted counter (it lives in the
+        // home chat's metadata and must survive while we're elsewhere).
+        if (!reminderActiveHere(reminder)) {
+            clearReminderInjection(reminder.id);
             continue;
         }
         if (reminder.mode === 'always') {
             setReminderInjection(reminder);
-            reminderArmed.delete(reminder.id);
+            remSetArmed(reminder, false);
             continue;
         }
         if (reminder.mode === 'match') {
@@ -761,23 +871,23 @@ function syncReminderInjections(advance = false) {
             const hit = re && re.test(reminderMatchText(reminder.scanLast || 2));
             if (hit) setReminderInjection(reminder);
             else clearReminderInjection(reminder.id);
-            reminderArmed.delete(reminder.id);
+            remSetArmed(reminder, false);
             continue;
         }
         // mode === 'every'
         const interval = Math.max(1, reminder.interval || 1);
         if (advance) {
-            const count = (reminderCounters.get(reminder.id) || 0) + 1;
+            const count = remGetCounter(reminder) + 1;
             if (count >= interval) {
-                reminderCounters.set(reminder.id, 0);
+                remSetCounter(reminder, 0);
                 setReminderInjection(reminder);
-                reminderArmed.add(reminder.id);
+                remSetArmed(reminder, true);
             } else {
-                reminderCounters.set(reminder.id, count);
+                remSetCounter(reminder, count);
                 clearReminderInjection(reminder.id);
-                reminderArmed.delete(reminder.id);
+                remSetArmed(reminder, false);
             }
-        } else if (reminderArmed.has(reminder.id)) {
+        } else if (remIsArmed(reminder)) {
             // Toggle / init / edit while already armed: keep the injection so an
             // edit doesn't swallow a reminder that is due for the next reply.
             // Re-apply in case depth / role / prompt just changed.
@@ -797,10 +907,13 @@ function onBotReplyForReminders() {
 }
 
 function resetReminderCounters() {
+    // Only the GLOBAL (in-memory) cadence resets on chat change. Chat-only
+    // reminders keep their counters in per-chat metadata, so switching chats
+    // must NOT wipe them — the whole point of #7 is that they persist.
     reminderCounters.clear();
     reminderArmed.clear();
     for (const { reminder } of getAllReminders()) {
-        if (reminder.mode === 'every') clearReminderInjection(reminder.id);
+        if (reminder.mode === 'every' && !reminder.chatOnly) clearReminderInjection(reminder.id);
     }
 }
 
@@ -1070,6 +1183,100 @@ function ptRefreshAges() {
         el.text(t('pt.age', { n: age }))
             .toggleClass('sf-pt-stale', age >= 20);
     }
+}
+
+// --- Auto-detect plot threads from chat (uses the Choice Cards API source) ---
+let ptDetectBusy = false;
+
+// Normalize a hook to a comparison key so we don't add near-duplicates of
+// threads the player (or a previous detect run) already has.
+function ptNormKey(text) {
+    return String(text || '').toLowerCase().replace(/[^a-z0-9а-яё ]/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function ptParseDetect(rawText) {
+    const jsonStr = ccExtractJson(rawText);
+    if (!jsonStr) return null;
+    let obj;
+    try { obj = JSON.parse(jsonStr); } catch { return null; }
+    // Accept either {threads:[...]} or a bare array.
+    let arr = Array.isArray(obj) ? obj : (Array.isArray(obj?.threads) ? obj.threads : null);
+    if (!Array.isArray(arr)) return null;
+    const out = [];
+    for (const item of arr) {
+        const text = (typeof item === 'string' ? item : (item?.text ?? item?.hook ?? item?.thread));
+        const clean = String(text || '')
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .trim()
+            .slice(0, 2000);
+        if (clean) out.push(clean);
+        if (out.length >= 8) break; // sane cap per run
+    }
+    return out;
+}
+
+// Ask the model to read the chat and surface dangling hooks. `silent`
+// suppresses toasts (auto-after-reply). Returns count of NEW threads added.
+async function ptAutoDetect({ silent = false } = {}) {
+    if (ptDetectBusy) return 0;
+    ptDetectBusy = true;
+    if (!silent) ptSetDetectBtn(true);
+    try {
+        // Give the model the threads we already track so it only returns NEW ones.
+        const existing = getPlotThreads().map(t2 => `- ${t2.text}`).join('\n') || '(none)';
+        const prompt = t('pt.detectPrompt', { existing });
+        const raw = await ccDispatchPrompt(prompt);
+        const found = ptParseDetect(raw);
+        if (!found) {
+            if (!silent) toastr.warning(t('pt.detectParseFail'), t('pt.toastTitle'));
+            return 0;
+        }
+        const haveKeys = new Set(getPlotThreads().map(x => ptNormKey(x.text)));
+        let added = 0;
+        for (const text of found) {
+            const key = ptNormKey(text);
+            if (!key || haveKeys.has(key)) continue;
+            haveKeys.add(key);
+            addPlotThread(text);
+            added++;
+        }
+        if (added && $('.storyforge-popup').length) {
+            $('#sf-body-threads').html(buildPlotThreadsHtml());
+            ptSyncHeaderCount();
+        }
+        if (!silent) {
+            if (added) toastr.success(t('pt.detected', { n: added }), t('pt.toastTitle'), { timeOut: 3000 });
+            else toastr.info(t('pt.detectedNone'), t('pt.toastTitle'), { timeOut: 2500 });
+        }
+        return added;
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] plot-thread detect failed`, err);
+        if (!silent) toastr.error(t('pt.detectFail', { msg: String(err?.message || err).slice(0, 120) }), t('pt.toastTitle'), { timeOut: 5000 });
+        return 0;
+    } finally {
+        ptDetectBusy = false;
+        if (!silent) ptSetDetectBtn(false);
+    }
+}
+
+function ptOnBotReplyAutoDetect() {
+    const s = getSettings();
+    if (!s.enabled || !s.ptAuto) return;
+    ptAutoDetect({ silent: true }).catch(() => {});
+}
+
+function ptSetDetectBtn(busy) {
+    const $btn = $('#sf-pt-detect');
+    if (!$btn.length) return;
+    $btn.prop('disabled', busy);
+    $btn.find('i').toggleClass('fa-spin', busy);
+}
+
+function ptSyncHeaderCount() {
+    const $cnt = $('#sf-toggle-threads .sf-pt-count');
+    const n = getPlotThreads().length;
+    if (n) { if ($cnt.length) $cnt.text(n); else $('#sf-toggle-threads h3').append(`<span class="sf-pt-count">${n}</span>`); }
+    else $cnt.remove();
 }
 
 // ==== Story State Tracker ==================================================
@@ -1820,6 +2027,10 @@ function buildRemindersHtml() {
                         <label>${escapeHtml(t('rem.role'))}
                             <select class="sf-rem-role" data-rem="${rid}">${roleOpts(rem.role || 'system')}</select>
                         </label>
+                        <label class="sf-rem-chatonly" data-rem="${rid}" title="${escapeHtml(t('rem.chatOnlyHint'))}">
+                            <input type="checkbox" class="sf-rem-chatonly-cb" data-rem="${rid}" ${rem.chatOnly ? 'checked' : ''}>
+                            ${escapeHtml(t('rem.chatOnly'))}
+                        </label>
                     </div>
                 </div>
             </div>`;
@@ -1910,6 +2121,7 @@ function buildPlotThreadsHtml() {
             </div>
         </div>`;
     }).join('');
+    const s = getSettings();
     const empty = threads.length ? '' : `<div class="sf-pt-empty">${escapeHtml(t('pt.empty'))}</div>`;
     return `<div class="sf-pt-intro">${escapeHtml(t('pt.intro'))}</div>
         ${empty}
@@ -1917,7 +2129,15 @@ function buildPlotThreadsHtml() {
         <div class="sf-pt-add-row">
             <input type="text" id="sf-pt-new" maxlength="2000" placeholder="${escapeHtml(t('pt.addPh'))}">
             <button class="storyforge-add-btn" id="sf-pt-add-btn"><i class="fa-solid fa-plus"></i> ${escapeHtml(t('pt.add'))}</button>
-        </div>`;
+        </div>
+        <div class="sf-pt-auto-row">
+            <button class="sf-ss-btn" id="sf-pt-detect"><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('pt.detect'))}</button>
+            <label class="sf-pt-auto-label" title="${escapeHtml(t('pt.autoHint'))}">
+                <input type="checkbox" id="sf-pt-auto" ${s.ptAuto ? 'checked' : ''}>
+                ${escapeHtml(t('pt.auto'))}
+            </label>
+        </div>
+        <div class="sf-ss-hint">${escapeHtml(t('pt.detectHint'))}</div>`;
 }
 
 // Build the Story State Tracker section HTML (scene-state fields + refresh).
@@ -2304,6 +2524,10 @@ function bindReminders() {
     $body.on('change' + NS, '.sf-rem-role', function () {
         updateReminder($(this).data('rem'), { role: $(this).val() });
     });
+    $body.on('change' + NS, '.sf-rem-chatonly-cb', function () {
+        updateReminder($(this).data('rem'), { chatOnly: $(this).is(':checked') });
+        updateReminderBadge();
+    });
     // Delete reminder
     $body.on('click' + NS, '.sf-rem-delete', function () {
         deleteReminder($(this).data('rem'));
@@ -2402,6 +2626,13 @@ function bindPlotThreads() {
     });
     $body.on('click' + NS, '.sf-pt-fire', function () {
         firePlotThread($(this).data('pt'));
+    });
+    $body.on('click' + NS, '#sf-pt-detect', () => {
+        ptAutoDetect({ silent: false });
+    });
+    $body.on('change' + NS, '#sf-pt-auto', function () {
+        getSettings().ptAuto = $(this).is(':checked');
+        saveSettings();
     });
     $body.on('click' + NS, '.sf-pt-delete', async function () {
         const id = $(this).data('pt');
@@ -4780,7 +5011,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.9.0 (plot threads, keyword reminders, scene state)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.10.0 (per-chat reminders, auto plot-thread detection)...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -4824,6 +5055,8 @@ jQuery(async () => {
             try { dmOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] director`, e); }
             // Plot Threads: tick the per-chat age clock + consume fired one-shots.
             try { ptOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] plot threads`, e); }
+            // Plot Threads: optionally auto-detect new hooks from the chat.
+            try { ptOnBotReplyAutoDetect(); } catch (e) { console.error(`[${MODULE_NAME}] thread detect`, e); }
             // Story State: auto-refresh from chat if enabled.
             try { ssOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] scene state`, e); }
         });
@@ -4851,7 +5084,7 @@ jQuery(async () => {
         // Prime the scene-state block on load.
         try { syncSceneStateInjection(); } catch (e) { console.error(`[${MODULE_NAME}] scene state init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.9.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.10.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

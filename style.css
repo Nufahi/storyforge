@@ -348,6 +348,8 @@
     font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);
 }
 .sf-reminder-opts label { display: flex; align-items: center; gap: 5px; }
+.sf-rem-chatonly { cursor: pointer; }
+.sf-rem-chatonly input[type="checkbox"] { cursor: pointer; margin: 0; }
 .sf-reminder-opts select,
 .sf-reminder-opts input[type="number"] {
     padding: 3px 6px; border-radius: 6px; font-size: 12px;
@@ -523,6 +525,9 @@
 }
 .sf-pt-add-row input:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
 .sf-pt-add-row .storyforge-add-btn { margin: 0; flex: 0 0 auto; white-space: nowrap; }
+.sf-pt-auto-row { display: flex; align-items: center; gap: 12px; margin: 10px 0 6px; flex-wrap: wrap; }
+.sf-pt-auto-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--SmartThemeBodyColor, #ccc); }
+.sf-pt-auto-label input[type="checkbox"] { cursor: pointer; margin: 0; }
 
 @media (max-width: 600px) {
     .sf-rem-match-wrap input[type="text"] { width: 100%; }
