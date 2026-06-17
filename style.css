@@ -343,6 +343,18 @@
     color: var(--SmartThemeBodyColor, #ccc); font-family: inherit; line-height: 1.5;
 }
 .sf-rem-prompt:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
+.sf-rem-prompt-wrap { position: relative; }
+.sf-rem-prompt-wrap .sf-rem-prompt { margin-top: 6px; padding-right: 30px; }
+.sf-rem-clear {
+    position: absolute; top: 10px; right: 6px;
+    width: 22px; height: 22px; padding: 0; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; border: none; border-radius: 5px;
+    background: transparent; color: var(--SmartThemeQuoteColor, #999);
+    font-size: 12px; transition: color .15s, background .15s;
+}
+.sf-rem-clear:hover { color: var(--SmartThemeBodyColor, #fff); background: rgba(255,255,255,.08); }
+.sf-rem-clear:active { background: rgba(255,255,255,.14); }
 .sf-reminder-opts {
     display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px;
     font-size: 11px; color: var(--SmartThemeQuoteColor, #aaa);
@@ -582,27 +594,7 @@
     .sf-pt-add-row { flex-direction: column; }
 }
 
-/* === Story State Tracker === */
-.sf-ss-intro {
-    font-size: 11px; line-height: 1.45;
-    color: var(--SmartThemeQuoteColor, #999); margin-bottom: 10px;
-}
-.sf-ss-fields { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
-.sf-ss-field { display: flex; flex-direction: column; gap: 3px; }
-.sf-ss-label {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
-    color: var(--SmartThemeQuoteColor, #999);
-}
-.sf-ss-label i { width: 13px; text-align: center; }
-.sf-ss-input {
-    width: 100%; padding: 6px 9px; border-radius: 7px; font-size: 13px;
-    border: 1px solid var(--SmartThemeBorderColor, #444);
-    background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04));
-    color: var(--SmartThemeBodyColor, #ccc); font-family: inherit;
-}
-.sf-ss-input:focus { outline: none; border-color: var(--SmartThemeQuoteColor, #888); }
-.sf-ss-actions { display: flex; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
+/* === Shared action buttons + hint (Plot Threads, Choice Cards) === */
 .sf-ss-btn {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 14px; border-radius: 7px; font-size: 12px; cursor: pointer;

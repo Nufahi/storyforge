@@ -245,7 +245,11 @@ const reminderArmed = new Set();
 // switches instead of resetting. Global reminders keep using the in-memory
 // Maps above. These helpers abstract the difference away from the engine.
 
-const SF_META_KEY = MODULE_NAME; // chatMetadata[MODULE_NAME] = { remCounters, remArmed }
+// chatMetadata[MODULE_NAME] = { remCounters, remArmed, plotThreads }
+// Everything that is "per-conversation" (every-N cadence, plot threads) lives
+// here so it travels WITH the chat: switch away and back and the same threads
+// are there, switch to a different chat and you see its own.
+const SF_META_KEY = MODULE_NAME;
 
 function getChatMeta() {
     try {
@@ -324,6 +328,17 @@ function reminderActiveHere(rem) {
     return !!cur && rem.homeChatId === cur;
 }
 
+// Pure (no side effects) visibility check for the UI: a reminder belongs in the
+// current chat's list if it's a shared/global reminder, OR it's chat-only but
+// has no home chat yet (freshly toggled — still being set up here), OR its home
+// chat is the one we're looking at. Chat-only reminders bound to OTHER chats are
+// hidden entirely so each chat shows only its own + the shared ones.
+function reminderBelongsToCurrentChat(rem) {
+    if (!rem.chatOnly) return true;
+    if (!rem.homeChatId) return true;
+    return rem.homeChatId === currentChatId();
+}
+
 const DEFAULT_REMINDER_FOLDERS = [
     {
         id: 'folder_appearance',
@@ -384,15 +399,6 @@ const defaultSettings = Object.freeze({
     plotThreads: null,          // [{ id, text, createdReply, fired }]
     ptFireDepth: 1,             // injection depth when a thread is fired
     ptAuto: false,              // auto-detect new threads from chat after each reply
-    // ==== Story State Tracker ====
-    // A compact "scene state" panel (location / time / who's present / open
-    // threads) injected as a single always-on reminder so the model stops
-    // forgetting where everyone is. Can be filled by hand or auto-extracted
-    // from recent chat by the Choice-Cards built-in API (a cheap model).
-    ssEnabled: false,
-    ssState: null,              // { location, time, present, threads }
-    ssDepth: 1,                 // injection depth for the scene-state block
-    ssAuto: false,              // auto-refresh after every bot reply (uses builtin API)
     // ==== Choice Cards ====
     ccEnabled: true,
     ccAuto: false,                      // generate automatically after every bot reply
@@ -1106,34 +1112,73 @@ function dmUpdateStatus() {
 // generation. Age is tracked via a per-chat reply counter (in-memory, reset on
 // chat change, like reminder counters) so it matches "X replies open" intent.
 
-let ptReplyClock = 0;               // bot replies seen in the current chat
 const ptFiredInjections = new Set(); // thread ids currently injected (one-shot)
 
+// Plot threads now live in the chat's own metadata so they belong to ONE chat:
+// switch chats and you see that chat's threads; switch back and yours are still
+// there. The age "reply clock" is stored alongside them so it travels too.
+// `getPlotThreads()` returns the live array from metadata. If metadata isn't
+// available yet (no chat loaded), fall back to a transient global array so the
+// UI doesn't crash; it'll be migrated/empty until a chat exists.
+const ptOrphanThreads = []; // used only when no chat metadata is available
+
+function ptMeta() {
+    const meta = getChatMeta();
+    if (!meta) return null;
+    if (!Array.isArray(meta.plotThreads)) meta.plotThreads = [];
+    if (typeof meta.ptReplyClock !== 'number') meta.ptReplyClock = 0;
+    return meta;
+}
+
 function getPlotThreads() {
-    const s = getSettings();
-    if (!Array.isArray(s.plotThreads)) s.plotThreads = [];
-    return s.plotThreads;
+    const meta = ptMeta();
+    if (!meta) return ptOrphanThreads;
+    // One-time migration: if this chat has no threads yet but the old global
+    // settings list does, adopt them into this chat (then clear the global so
+    // they don't leak into every other chat).
+    if (meta.plotThreads.length === 0) {
+        const s = getSettings();
+        if (Array.isArray(s.plotThreads) && s.plotThreads.length) {
+            meta.plotThreads = structuredClone(s.plotThreads);
+            s.plotThreads = [];
+            saveSettings();
+            saveChatMeta();
+        }
+    }
+    return meta.plotThreads;
+}
+
+function getPtReplyClock() {
+    const meta = ptMeta();
+    return meta ? meta.ptReplyClock : 0;
+}
+
+function setPtReplyClock(val) {
+    const meta = ptMeta();
+    if (meta) { meta.ptReplyClock = val; saveChatMeta(); }
 }
 
 function addPlotThread(text) {
     const threads = getPlotThreads();
     const clean = String(text || '').slice(0, MAX_REMINDER_FIELD_LEN);
     const id = makeId('pt');
-    threads.push({ id, text: clean, createdReply: ptReplyClock, fired: false });
-    saveSettings();
+    threads.push({ id, text: clean, createdReply: getPtReplyClock(), fired: false });
+    saveChatMeta();
     return id;
 }
 
 function updatePlotThread(id, text) {
     const th = getPlotThreads().find(x => x.id === id);
-    if (th) { th.text = String(text || '').slice(0, MAX_REMINDER_FIELD_LEN); saveSettings(); }
+    if (th) { th.text = String(text || '').slice(0, MAX_REMINDER_FIELD_LEN); saveChatMeta(); }
 }
 
 function deletePlotThread(id) {
-    const s = getSettings();
     ptClearInjection(id);
-    s.plotThreads = getPlotThreads().filter(x => x.id !== id);
-    saveSettings();
+    const meta = ptMeta();
+    if (meta) {
+        meta.plotThreads = meta.plotThreads.filter(x => x.id !== id);
+        saveChatMeta();
+    }
 }
 
 function ptClearInjection(id) {
@@ -1170,29 +1215,32 @@ function firePlotThread(id) {
     );
     ptFiredInjections.add(id);
     th.fired = true;
-    saveSettings();
+    saveChatMeta();
     toastr.info(t('pt.fired', { age: ptThreadAge(th) }), t('pt.toastTitle'), { timeOut: 3000 });
     return true;
 }
 
 function ptThreadAge(th) {
-    return Math.max(0, ptReplyClock - (th.createdReply | 0));
+    return Math.max(0, getPtReplyClock() - (th.createdReply | 0));
 }
 
 // Called once per finished bot reply: tick the age clock and consume any fired
 // one-shot injections (they were present for the reply that just rendered).
 function ptOnBotReply() {
-    ptReplyClock++;
+    setPtReplyClock(getPtReplyClock() + 1);
     ptClearAllInjections();
     if ($('.storyforge-popup').length) ptRefreshAges();
 }
 
+// Chat switched: threads now live in each chat's own metadata, so we DON'T wipe
+// them — we just drop any in-flight one-shot injections (they belonged to the
+// previous chat's generation) and repaint the panel with the new chat's threads.
 function ptResetForChat() {
-    ptReplyClock = 0;
     ptClearAllInjections();
-    // Reset per-chat age baseline so threads read "0" in a fresh chat rather
-    // than a stale age from the previous conversation.
-    for (const th of getPlotThreads()) th.createdReply = 0;
+    if ($('.storyforge-popup').length) {
+        $('#sf-body-threads').html(buildPlotThreadsHtml());
+        ptSyncHeaderCount();
+    }
 }
 
 // Update just the age badges in an open popup without a full rerender.
@@ -1298,160 +1346,6 @@ function ptSyncHeaderCount() {
     const n = getPlotThreads().length;
     if (n) { if ($cnt.length) $cnt.text(n); else $('#sf-toggle-threads h3').append(`<span class="sf-pt-count">${n}</span>`); }
     else $cnt.remove();
-}
-
-// ==== Story State Tracker ==================================================
-// A compact, always-on "scene state" block (location / time / who's present /
-// open threads) so the model stops losing track of where everyone is. Filled
-// by hand or auto-extracted from recent chat via the Choice-Cards dispatcher.
-
-const SS_FIELDS = ['location', 'time', 'present', 'threads'];
-const SS_MAX_FIELD_LEN = 600;
-let ssAutoBusy = false; // guard against overlapping auto-refreshes
-
-function getSceneState() {
-    const s = getSettings();
-    if (!s.ssState || typeof s.ssState !== 'object') {
-        s.ssState = { location: '', time: '', present: '', threads: '' };
-    }
-    for (const f of SS_FIELDS) {
-        if (typeof s.ssState[f] !== 'string') s.ssState[f] = '';
-    }
-    return s.ssState;
-}
-
-function setSceneStateField(field, value) {
-    if (!SS_FIELDS.includes(field)) return;
-    const st = getSceneState();
-    st[field] = String(value || '').slice(0, SS_MAX_FIELD_LEN);
-    saveSettings();
-    syncSceneStateInjection();
-}
-
-// Compose the single injected block from non-empty fields. {{user}}/{{char}}
-// in the field text resolve to real names. Returns '' when nothing is set.
-function buildSceneStatePrompt() {
-    const st = getSceneState();
-    const parts = [];
-    const add = (key, val) => {
-        const v = String(val || '').trim();
-        if (v) parts.push(`${t('ss.field.' + key)}: ${ccSubstStMacros(v)}`);
-    };
-    add('location', st.location);
-    add('time', st.time);
-    add('present', st.present);
-    add('threads', st.threads);
-    if (!parts.length) return '';
-    return `[${t('ss.injectLabel')}] ${parts.join(' | ')}`;
-}
-
-const SS_INJECT_KEY = `${MODULE_NAME}_scenestate`;
-
-function syncSceneStateInjection() {
-    const ctx = SillyTavern.getContext();
-    const s = getSettings();
-    const prompt = (s.enabled && s.ssEnabled) ? buildSceneStatePrompt() : '';
-    if (prompt) {
-        const depth = Math.max(0, Math.min(10, s.ssDepth | 0));
-        ctx.setExtensionPrompt(SS_INJECT_KEY, prompt, POSITION_IN_CHAT, depth, true, ROLE_SYSTEM);
-    } else {
-        ctx.setExtensionPrompt(SS_INJECT_KEY, '', POSITION_IN_CHAT, 0, false, ROLE_SYSTEM);
-    }
-}
-
-function ssResetForChat() {
-    // Scene state is per-conversation: wipe on chat switch so we don't carry a
-    // bedroom scene into a tavern. (Mirrors plot-thread age reset.)
-    const st = getSceneState();
-    for (const f of SS_FIELDS) st[f] = '';
-    saveSettings();
-    syncSceneStateInjection();
-    if ($('.storyforge-popup').length) ssRefreshFields();
-}
-
-// Build the extraction instruction sent to the cheap model.
-function buildSceneStateExtractPrompt() {
-    return t('ss.extractPrompt');
-}
-
-// Parse the model's JSON reply into a sanitized {location,time,present,threads}.
-function ssParseExtract(rawText) {
-    const jsonStr = ccExtractJson(rawText);
-    if (!jsonStr) return null;
-    let obj;
-    try { obj = JSON.parse(jsonStr); } catch { return null; }
-    if (!obj || typeof obj !== 'object') return null;
-    const clean = (v) => {
-        if (Array.isArray(v)) v = v.join(', ');
-        return String(v ?? '')
-            .replace(/[\u0000-\u001f\u007f]/g, ' ')
-            .trim()
-            .slice(0, SS_MAX_FIELD_LEN);
-    };
-    return {
-        location: clean(obj.location),
-        time: clean(obj.time),
-        present: clean(obj.present ?? obj.who ?? obj.characters),
-        threads: clean(obj.threads ?? obj.open ?? obj.hooks),
-    };
-}
-
-// Auto-refresh scene state from recent chat. `silent` suppresses the "done"
-// toast (used by the post-reply auto hook). Returns true on success.
-async function ssAutoRefresh({ silent = false } = {}) {
-    if (ssAutoBusy) return false;
-    ssAutoBusy = true;
-    if (!silent) ssSetRefreshBtn(true);
-    try {
-        const raw = await ccDispatchPrompt(buildSceneStateExtractPrompt());
-        const parsed = ssParseExtract(raw);
-        if (!parsed) {
-            if (!silent) toastr.warning(t('ss.parseFail'), t('ss.toastTitle'));
-            return false;
-        }
-        const st = getSceneState();
-        // Only overwrite a field when the model returned something for it, so a
-        // blank extraction doesn't wipe a field the user typed by hand.
-        let changed = false;
-        for (const f of SS_FIELDS) {
-            if (parsed[f] && parsed[f] !== st[f]) { st[f] = parsed[f]; changed = true; }
-        }
-        if (changed) { saveSettings(); syncSceneStateInjection(); }
-        if ($('.storyforge-popup').length) ssRefreshFields();
-        if (!silent) toastr.success(t('ss.refreshed'), t('ss.toastTitle'), { timeOut: 2500 });
-        return true;
-    } catch (err) {
-        console.warn(`[${MODULE_NAME}] scene-state extract failed`, err);
-        if (!silent) toastr.error(t('ss.refreshFail', { msg: String(err?.message || err).slice(0, 120) }), t('ss.toastTitle'), { timeOut: 5000 });
-        return false;
-    } finally {
-        ssAutoBusy = false;
-        if (!silent) ssSetRefreshBtn(false);
-    }
-}
-
-// Called after each bot reply when auto mode is on.
-function ssOnBotReply() {
-    const s = getSettings();
-    if (!s.enabled || !s.ssEnabled || !s.ssAuto) return;
-    // Fire-and-forget; never block the reply pipeline.
-    ssAutoRefresh({ silent: true }).catch(() => {});
-}
-
-// Reflect the live state into an open popup's inputs.
-function ssRefreshFields() {
-    const st = getSceneState();
-    for (const f of SS_FIELDS) {
-        const el = $(`.sf-ss-input[data-ss="${f}"]`);
-        if (el.length && el.val() !== st[f]) el.val(st[f]);
-    }
-}
-
-function ssSetRefreshBtn(busy) {
-    const $btn = $('#sf-ss-refresh');
-    if (!$btn.length) return;
-    $btn.prop('disabled', busy);
-    $btn.find('i').toggleClass('fa-spin', busy);
 }
 
 // Track the last focused editable textarea/input so quick inserts can target
@@ -2010,7 +1904,10 @@ function buildRemindersHtml() {
 
     const foldersHtml = folders.map(folder => {
         const fid = escapeHtml(folder.id);
-        const remsHtml = (folder.reminders || []).map(rem => {
+        // Hide chat-only reminders that belong to OTHER chats: each chat shows
+        // only its own chat-only reminders plus the shared/global ones.
+        const visibleReminders = (folder.reminders || []).filter(reminderBelongsToCurrentChat);
+        const remsHtml = visibleReminders.map(rem => {
             const rid = escapeHtml(rem.id);
             const everyVisible = rem.mode === 'every' ? '' : 'style="display:none"';
             const matchVisible = rem.mode === 'match' ? '' : 'style="display:none"';
@@ -2027,7 +1924,10 @@ function buildRemindersHtml() {
                     <span class="sf-rem-delete fa-solid fa-xmark" data-rem="${rid}" title="${escapeHtml(t('common.delete'))}"></span>
                 </div>
                 <div class="sf-reminder-body">
-                    <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
+                    <div class="sf-rem-prompt-wrap">
+                        <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
+                        <button type="button" class="sf-rem-clear" data-rem="${rid}" title="${escapeHtml(t('rem.clearPrompt'))}" aria-label="${escapeHtml(t('rem.clearPrompt'))}"><i class="fa-solid fa-eraser"></i></button>
+                    </div>
                     <div class="sf-reminder-opts">
                         <label>${escapeHtml(t('rem.mode'))}
                             <select class="sf-rem-mode" data-rem="${rid}">
@@ -2161,41 +2061,6 @@ function buildPlotThreadsHtml() {
         <div class="sf-ss-hint">${escapeHtml(t('pt.detectHint'))}</div>`;
 }
 
-// Build the Story State Tracker section HTML (scene-state fields + refresh).
-function buildSceneStateHtml() {
-    const s = getSettings();
-    const st = getSceneState();
-    const field = (key, icon) => `
-        <div class="sf-ss-field">
-            <label class="sf-ss-label"><i class="fa-solid ${icon}"></i> ${escapeHtml(t('ss.field.' + key))}</label>
-            <input type="text" class="sf-ss-input" data-ss="${key}" maxlength="600" value="${escapeHtml(st[key] || '')}" placeholder="${escapeHtml(t('ss.ph.' + key))}">
-        </div>`;
-    return `<div class="sf-ss-intro">${escapeHtml(t('ss.intro'))}</div>
-        <div class="storyforge-settings-row">
-            <input type="checkbox" id="sf-ss-enabled" ${s.ssEnabled ? 'checked' : ''}>
-            <label for="sf-ss-enabled">${escapeHtml(t('ss.enable'))}</label>
-        </div>
-        <div class="sf-ss-fields">
-            ${field('location', 'fa-location-dot')}
-            ${field('time', 'fa-clock')}
-            ${field('present', 'fa-users')}
-            ${field('threads', 'fa-link')}
-        </div>
-        <div class="storyforge-settings-row">
-            <label for="sf-ss-depth">${escapeHtml(t('ss.depth'))}</label>
-            <input type="number" id="sf-ss-depth" min="0" max="10" value="${escapeHtml(String(s.ssDepth ?? 1))}">
-        </div>
-        <div class="storyforge-settings-row">
-            <input type="checkbox" id="sf-ss-auto" ${s.ssAuto ? 'checked' : ''}>
-            <label for="sf-ss-auto" title="${escapeHtml(t('ss.autoHint'))}">${escapeHtml(t('ss.auto'))}</label>
-        </div>
-        <div class="sf-ss-actions">
-            <button class="sf-ss-btn" id="sf-ss-refresh"><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('ss.refresh'))}</button>
-            <button class="sf-ss-btn sf-ss-clear" id="sf-ss-clear"><i class="fa-solid fa-eraser"></i> ${escapeHtml(t('ss.clear'))}</button>
-        </div>
-        <div class="sf-ss-hint">${escapeHtml(t('ss.refreshHint'))}</div>`;
-}
-
 function buildPopupHtml() {
     const settings = getSettings();
     const tools = getTools();
@@ -2266,13 +2131,6 @@ function buildPopupHtml() {
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
             <div class="storyforge-section-body" id="sf-body-threads">${buildPlotThreadsHtml()}</div>
-        </div>
-        <div class="storyforge-section">
-            <div class="storyforge-section-toggle" id="sf-toggle-scenestate">
-                <h3><i class="fa-solid fa-map-pin"></i> ${escapeHtml(t('ss.section.title'))}${settings.ssEnabled ? ' <span class="sf-dm-on-dot" title="' + escapeHtml(t('ss.enable')) + '"></span>' : ''}</h3>
-                <i class="fa-solid fa-chevron-down"></i>
-            </div>
-            <div class="storyforge-section-body" id="sf-body-scenestate">${buildSceneStateHtml()}</div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-settings">
@@ -2413,9 +2271,6 @@ async function openStoryForgePopup() {
 
         // Plot Threads
         bindPlotThreads();
-
-        // Story State Tracker
-        bindSceneState();
     });
 
     await popup.show();
@@ -2439,10 +2294,6 @@ function bindSections() {
     $('#sf-toggle-threads').off('click').on('click', function () {
         $(this).toggleClass('open');
         $('#sf-body-threads').toggleClass('open');
-    });
-    $('#sf-toggle-scenestate').off('click').on('click', function () {
-        $(this).toggleClass('open');
-        $('#sf-body-scenestate').toggleClass('open');
     });
     $('#sf-toggle-settings').off('click').on('click', function () {
         $(this).toggleClass('open');
@@ -2522,6 +2373,14 @@ function bindReminders() {
     });
     $body.on('input' + NS, '.sf-rem-prompt', function () {
         updateReminder($(this).data('rem'), { prompt: $(this).val() });
+    });
+    // Eraser button: clear the prompt textarea (and persist the empty value).
+    $body.on('click' + NS, '.sf-rem-clear', function () {
+        const rid = $(this).data('rem');
+        const $ta = $(`.sf-rem-prompt[data-rem="${rid}"]`);
+        $ta.val('');
+        updateReminder(rid, { prompt: '' });
+        $ta.trigger('focus');
     });
     $body.on('change' + NS, '.sf-rem-mode', function () {
         const rid = $(this).data('rem');
@@ -2665,43 +2524,6 @@ function bindPlotThreads() {
     });
 }
 
-// Wire up the Story State Tracker section.
-function bindSceneState() {
-    const $body = $('#sf-body-scenestate');
-    if (!$body.length) return;
-    const NS = '.sf-ss';
-    $body.off(NS);
-
-    $body.on('change' + NS, '#sf-ss-enabled', function () {
-        const on = $(this).is(':checked');
-        getSettings().ssEnabled = on;
-        saveSettings();
-        syncSceneStateInjection();
-        const $h3 = $('#sf-toggle-scenestate h3');
-        $h3.find('.sf-dm-on-dot').remove();
-        if (on) $h3.append('<span class="sf-dm-on-dot"></span>');
-    });
-    $body.on('input' + NS, '.sf-ss-input', function () {
-        setSceneStateField($(this).data('ss'), $(this).val());
-    });
-    $body.on('input' + NS, '#sf-ss-depth', function () {
-        getSettings().ssDepth = Math.min(Math.max(parseInt($(this).val(), 10) || 0, 0), 10);
-        saveSettings();
-        syncSceneStateInjection();
-    });
-    $body.on('change' + NS, '#sf-ss-auto', function () {
-        getSettings().ssAuto = $(this).is(':checked');
-        saveSettings();
-    });
-    $body.on('click' + NS, '#sf-ss-refresh', () => {
-        ssAutoRefresh({ silent: false });
-    });
-    $body.on('click' + NS, '#sf-ss-clear', async () => {
-        const confirmed = await SillyTavern.getContext().Popup.show.confirm(t('ss.clearTitle'), t('ss.clearBody'));
-        if (confirmed) { ssResetForChat(); }
-    });
-}
-
 function refreshPopupContent() {
     const container = $('.storyforge-popup');
     if (!container.length) return;
@@ -2743,9 +2565,6 @@ function refreshPopupContent() {
 
     // Rebind plot threads
     bindPlotThreads();
-
-    // Rebind scene state
-    bindSceneState();
 }
 
 // ==== Menu ====
@@ -5248,8 +5067,6 @@ jQuery(async () => {
             try { ptOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] plot threads`, e); }
             // Plot Threads: optionally auto-detect new hooks from the chat.
             try { ptOnBotReplyAutoDetect(); } catch (e) { console.error(`[${MODULE_NAME}] thread detect`, e); }
-            // Story State: auto-refresh from chat if enabled.
-            try { ssOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] scene state`, e); }
         });
         // New chat = fresh cycle: reset counters and disarm every-N reminders.
         eventSource.on(event_types.CHAT_CHANGED, () => {
@@ -5258,8 +5075,14 @@ jQuery(async () => {
             try { dmResetState(); } catch { /* ignore */ }
             // Plot Threads age is per-chat too.
             try { ptResetForChat(); } catch { /* ignore */ }
-            // Scene state is per-conversation.
-            try { ssResetForChat(); } catch { /* ignore */ }
+            // Chat-only reminders are scoped to their home chat, so repaint the
+            // list to show this chat's own reminders + the shared ones only.
+            try {
+                if ($('.storyforge-popup').length) {
+                    $('#sf-body-reminders').html(buildRemindersHtml());
+                    updateReminderBadge();
+                }
+            } catch { /* ignore */ }
         });
         // Re-evaluate keyword-triggered ('match') reminders just before a
         // generation starts, so a keyword in the user's just-sent message can
@@ -5272,8 +5095,6 @@ jQuery(async () => {
         } catch { /* event not present on this build */ }
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
-        // Prime the scene-state block on load.
-        try { syncSceneStateInjection(); } catch (e) { console.error(`[${MODULE_NAME}] scene state init`, e); }
 
         console.log(`[${MODULE_NAME}] v1.11.0 loaded`);
     } catch (err) {
