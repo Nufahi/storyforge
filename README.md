@@ -48,6 +48,7 @@ Persistent and periodic prompts that auto-inject so the model never forgets a de
 - **Every N replies** — the prompt surfaces once every N model replies, then steps back (counts only the AI's replies)
 - Per-reminder **injection depth** (0-10) and **role** (System / User / Assistant)
 - A small status tag shows when each reminder will next fire (`always on`, `next reply`, `in 2`...)
+- **Reference image** — attach a thumbnail to any reminder (paste a gallery / web image URL or upload a file). Keep a visual of an outfit, a location or a face right next to the note. Flip **Send to model** and StoryForge will best-effort attach that image to the next generation so vision-capable backends can actually *see* it.
 
 Example: put your persona's outfit description in an "Appearance" folder set to **Every 2 replies** — it auto-injects on every other AI reply so the model keeps clothing consistent.
 

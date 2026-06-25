@@ -200,6 +200,27 @@ const REMINDER_ROLES = { system: 0, user: 1, assistant: 2 };
 const REMINDER_MODES = ['always', 'every', 'match'];
 const MAX_REMINDER_FIELD_LEN = 10000;
 const MAX_REMINDER_PATTERN_LEN = 300;
+// Cap a reminder's stored image. data: URLs (uploaded files) can be large, so
+// allow a generous-but-bounded budget; longer values are rejected to avoid
+// bloating settings storage.
+const MAX_REMINDER_IMAGE_LEN = 3_500_000; // ~2.5 MB once base64-decoded
+
+// Validate / sanitize a reminder image reference. Accepts only safe sources:
+//   • data:image/...;base64,...  (uploaded file)
+//   • http(s):// URLs            (gallery / remote)
+//   • site-relative paths        (/user/images/..., backgrounds/..., etc.)
+// Anything else (javascript:, vbscript:, raw HTML, oversized) becomes ''.
+function sanitizeReminderImage(raw) {
+    if (typeof raw !== 'string') return '';
+    const s = raw.trim();
+    if (!s) return '';
+    if (s.length > MAX_REMINDER_IMAGE_LEN) return '';
+    if (/^data:image\/(png|jpe?g|webp|gif|avif);base64,[A-Za-z0-9+/=\s]+$/i.test(s)) return s;
+    if (/^https?:\/\/[^\s"'<>]+$/i.test(s)) return s;
+    // Site-relative path (no scheme, no protocol-relative //, no control chars).
+    if (/^\/?[\w.\-/%]+\.(png|jpe?g|webp|gif|avif)(\?[^\s"'<>]*)?$/i.test(s) && !s.startsWith('//')) return s;
+    return '';
+}
 
 // Compile a user-supplied reminder match pattern into a RegExp, case-insensitive.
 // The pattern is treated as a raw regex source (so "attack|sword|fight" works),
@@ -355,6 +376,7 @@ const DEFAULT_REMINDER_FOLDERS = [
                 depth: 1,
                 role: 'system',
                 prompt: '[Reminder] Keep {{char}}\'s and {{user}}\'s current outfits and appearance consistent with what was established earlier. Do not silently change clothing, hairstyle or notable physical details unless the story explicitly does so.',
+                image: '', imageSend: false,
             },
         ],
     },
@@ -694,6 +716,10 @@ function addReminder(folderId, label, prompt) {
         id, label: label || 'Reminder', enabled: false, collapsed: false,
         mode: 'every', interval: 2, depth: 1, role: 'system',
         prompt: prompt || '', pattern: '', scanLast: 2, chatOnly: false, homeChatId: null,
+        // Optional visual reference image (gallery URL or data: URL). Shown as a
+        // thumbnail in the panel; optionally attached to the next generation so
+        // multimodal backends can "see" it (e.g. an outfit reference).
+        image: '', imageSend: false,
     });
     saveSettings();
     return id;
@@ -712,6 +738,8 @@ function updateReminder(remId, data) {
     if (data.role in REMINDER_ROLES) r.role = data.role;
     if (typeof data.pattern === 'string') r.pattern = data.pattern.slice(0, MAX_REMINDER_PATTERN_LEN);
     if (Number.isFinite(data.scanLast)) r.scanLast = Math.min(Math.max(Math.floor(data.scanLast), 1), 10);
+    if (typeof data.image === 'string') r.image = sanitizeReminderImage(data.image);
+    if (typeof data.imageSend === 'boolean') r.imageSend = data.imageSend;
     if (typeof data.chatOnly === 'boolean') {
         r.chatOnly = data.chatOnly;
         if (data.chatOnly) {
@@ -942,6 +970,103 @@ function resetReminderCounters() {
     for (const { reminder } of getAllReminders()) {
         if (reminder.mode === 'every' && !reminder.chatOnly) clearReminderInjection(reminder.id);
     }
+}
+
+// ==== Reminders: multimodal image attachment ===============================
+// Best-effort: when an image-bearing reminder is active for the upcoming
+// generation AND has "send to model" enabled, temporarily attach its image to
+// the latest user message so multimodal-capable backends can see it. The
+// attachment is removed again as soon as generation ends, so it never pollutes
+// chat history or gets re-sent on later turns. Different ST versions store
+// inline images differently (modern `extra.media[]`, legacy `extra.image`), so
+// we write both and clean both up.
+
+// Track what we mutated so cleanup is exact (no clobbering a user's real image).
+let remImageAttached = null; // { mesIndex, addedMedia: bool, addedImage: bool }
+
+// Decide whether a reminder's image should ride along with THIS generation:
+// it must be enabled, have a "send" flag, a valid image, and currently be the
+// kind of reminder whose text is in context (always / armed every-N / matched).
+function reminderImageActiveNow(rem) {
+    if (!rem.enabled || !rem.imageSend) return false;
+    const img = sanitizeReminderImage(rem.image || '');
+    if (!img) return false;
+    if (!reminderActiveHere(rem)) return false;
+    if (rem.mode === 'always') return true;
+    if (rem.mode === 'match') {
+        const re = compileReminderPattern(rem.pattern);
+        return !!(re && re.test(reminderMatchText(rem.scanLast || 2)));
+    }
+    // every-N: only on the turn it is armed/due.
+    return remIsArmed(rem);
+}
+
+// Pick the single image to attach (first matching reminder wins — keeps the
+// payload small and behaviour predictable). Returns its data/URL or ''.
+function pickActiveReminderImage() {
+    if (!getSettings().enabled) return '';
+    for (const { reminder } of getAllReminders()) {
+        if (reminderImageActiveNow(reminder)) return sanitizeReminderImage(reminder.image || '');
+    }
+    return '';
+}
+
+function attachReminderImageToGeneration() {
+    try {
+        if (remImageAttached) detachReminderImage(); // safety: never stack
+        const img = pickActiveReminderImage();
+        if (!img) return;
+        const chat = SillyTavern.getContext().chat;
+        if (!Array.isArray(chat) || !chat.length) return;
+        // Find the last user message (the one driving this generation).
+        let idx = -1;
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (chat[i] && chat[i].is_user) { idx = i; break; }
+        }
+        if (idx === -1) return;
+        const mes = chat[idx];
+        mes.extra = mes.extra || {};
+        const rec = { mesIndex: idx, addedMedia: false, addedImage: false };
+        // Modern schema: media[] array. Only touch it if WE can fully own a
+        // freshly-created array slot, so cleanup never drops the user's media.
+        if (!mes.extra.image && (!Array.isArray(mes.extra.media) || mes.extra.media.length === 0)) {
+            mes.extra.media = [{ url: img, type: 'image', title: 'StoryForge reminder', source: 'storyforge' }];
+            mes.extra.media_index = 0;
+            mes.extra.inline_image = true;
+            rec.addedMedia = true;
+        }
+        // Legacy schema: extra.image string. Set only if empty.
+        if (!mes.extra.image && !Array.isArray(mes.extra.media)) {
+            mes.extra.image = img;
+            mes.extra.inline_image = true;
+            rec.addedImage = true;
+        }
+        if (rec.addedMedia || rec.addedImage) remImageAttached = rec;
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] reminder image attach failed`, e);
+    }
+}
+
+function detachReminderImage() {
+    if (!remImageAttached) return;
+    try {
+        const chat = SillyTavern.getContext().chat;
+        const mes = chat && chat[remImageAttached.mesIndex];
+        if (mes && mes.extra) {
+            if (remImageAttached.addedMedia) {
+                delete mes.extra.media;
+                delete mes.extra.media_index;
+                delete mes.extra.inline_image;
+            }
+            if (remImageAttached.addedImage) {
+                delete mes.extra.image;
+                delete mes.extra.inline_image;
+            }
+        }
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] reminder image cleanup failed`, e);
+    }
+    remImageAttached = null;
 }
 
 // ==== Director Mode ========================================================
@@ -1896,6 +2021,36 @@ function reminderStatusText(rem) {
 
 let currentPopup = null;
 
+// Build the per-reminder image block: a thumbnail (or an empty drop-zone) plus
+// attach / clear controls and a "send to model" toggle. The image is a visual
+// reference (e.g. an outfit) the user can optionally feed to multimodal models.
+function buildReminderImageHtml(rem, rid) {
+    const img = sanitizeReminderImage(rem.image || '');
+    const hasImg = !!img;
+    const thumb = hasImg
+        ? `<div class="sf-rem-img-thumb" style="background-image:url('${escapeHtml(img)}')" data-rem="${rid}" title="${escapeHtml(t('rem.img.change'))}"></div>`
+        : `<div class="sf-rem-img-thumb is-empty" data-rem="${rid}" title="${escapeHtml(t('rem.img.add'))}"><i class="fa-solid fa-image"></i></div>`;
+    const sendToggle = hasImg
+        ? `<label class="sf-rem-img-send" data-rem="${rid}" title="${escapeHtml(t('rem.img.sendHint'))}">
+               <input type="checkbox" class="sf-rem-img-send-cb" data-rem="${rid}" ${rem.imageSend ? 'checked' : ''}>
+               ${escapeHtml(t('rem.img.send'))}
+           </label>`
+        : '';
+    const clearBtn = hasImg
+        ? `<button type="button" class="sf-rem-img-clear" data-rem="${rid}" title="${escapeHtml(t('rem.img.remove'))}"><i class="fa-solid fa-xmark"></i> ${escapeHtml(t('rem.img.remove'))}</button>`
+        : '';
+    return `<div class="sf-rem-image ${hasImg ? 'has-img' : ''}" data-rem="${rid}">
+        ${thumb}
+        <div class="sf-rem-img-side">
+            <button type="button" class="sf-rem-img-attach" data-rem="${rid}">
+                <i class="fa-solid fa-paperclip"></i> ${escapeHtml(hasImg ? t('rem.img.change') : t('rem.img.add'))}
+            </button>
+            ${sendToggle}
+            ${clearBtn}
+        </div>
+    </div>`;
+}
+
 // Build the Reminders section HTML (folders of periodic/persistent prompts).
 function buildRemindersHtml() {
     const folders = getReminderFolders();
@@ -1928,6 +2083,7 @@ function buildRemindersHtml() {
                         <textarea class="sf-rem-prompt" data-rem="${rid}" placeholder="${escapeHtml(t('rem.promptPh'))}">${escapeHtml(rem.prompt || '')}</textarea>
                         <button type="button" class="sf-rem-clear" data-rem="${rid}" title="${escapeHtml(t('rem.clearPrompt'))}" aria-label="${escapeHtml(t('rem.clearPrompt'))}"><i class="fa-solid fa-eraser"></i></button>
                     </div>
+                    ${buildReminderImageHtml(rem, rid)}
                     <div class="sf-reminder-opts">
                         <label>${escapeHtml(t('rem.mode'))}
                             <select class="sf-rem-mode" data-rem="${rid}">
@@ -2301,6 +2457,106 @@ function bindSections() {
     });
 }
 
+// Read a File as a data: URL (base64). Bounded so a huge image can't blow up
+// settings storage; oversized files are rejected with a toast.
+function readReminderImageFile(file) {
+    return new Promise((resolve) => {
+        if (!file || !/^image\//.test(file.type)) {
+            toastr.warning(t('rem.img.notImage'), t('app'));
+            return resolve(null);
+        }
+        // Soft size guard before we even read (decoded base64 ~ 1.33x bytes).
+        if (file.size > 2.5 * 1024 * 1024) {
+            toastr.warning(t('rem.img.tooBig'), t('app'));
+            return resolve(null);
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const out = sanitizeReminderImage(String(reader.result || ''));
+            if (!out) toastr.warning(t('rem.img.tooBig'), t('app'));
+            resolve(out || null);
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+    });
+}
+
+// Open the image picker for a reminder: a small popup offering a URL/gallery
+// path input and a file-upload button. Resolves nothing; applies + persists +
+// repaints the reminder's image block on success.
+function openReminderImagePicker(remId) {
+    const found = findReminder(remId);
+    if (!found) return;
+    const cur = sanitizeReminderImage(found.reminder.image || '');
+    const rid = escapeHtml(remId);
+
+    const html = `<div class="sf-rem-img-modal">
+        <h3 class="sf-rem-img-modal-title"><i class="fa-solid fa-image"></i> ${escapeHtml(t('rem.img.pickerTitle'))}</h3>
+        <p class="sf-rem-img-modal-hint">${escapeHtml(t('rem.img.pickerHint'))}</p>
+        <div class="sf-rem-img-preview ${cur ? '' : 'is-empty'}" id="sf-rem-img-preview"
+            style="${cur ? `background-image:url('${escapeHtml(cur)}')` : ''}">
+            ${cur ? '' : '<i class="fa-solid fa-image"></i>'}
+        </div>
+        <label class="sf-rem-img-modal-label">${escapeHtml(t('rem.img.urlLabel'))}</label>
+        <input type="text" id="sf-rem-img-url" class="sf-rem-img-url" placeholder="${escapeHtml(t('rem.img.urlPh'))}" value="${escapeHtml(cur && !cur.startsWith('data:') ? cur : '')}">
+        <div class="sf-rem-img-modal-or">${escapeHtml(t('rem.img.or'))}</div>
+        <button type="button" id="sf-rem-img-upload" class="menu_button sf-rem-img-upload-btn">
+            <i class="fa-solid fa-upload"></i> ${escapeHtml(t('rem.img.upload'))}
+        </button>
+        <input type="file" id="sf-rem-img-file" accept="image/*" style="display:none">
+        <div class="sf-rem-img-modal-buttons">
+            ${cur ? `<button id="sf-rem-img-remove" class="menu_button sf-rem-img-remove-btn"><i class="fa-solid fa-trash"></i> ${escapeHtml(t('rem.img.remove'))}</button>` : ''}
+            <button id="sf-rem-img-cancel" class="menu_button">${escapeHtml(t('common.cancel'))}</button>
+            <button id="sf-rem-img-save" class="menu_button sf-qi-save-btn">${escapeHtml(t('common.save'))}</button>
+        </div>
+    </div>`;
+
+    const { Popup, POPUP_TYPE } = SillyTavern.getContext();
+    const popup = new Popup(html, POPUP_TYPE.TEXT, '', { okButton: t('common.close'), allowVerticalScrolling: true });
+
+    // Working value: starts at current, updated by upload / URL edits.
+    let pending = cur;
+    const setPreview = (val) => {
+        const $p = $('#sf-rem-img-preview');
+        if (val) { $p.removeClass('is-empty').css('background-image', `url('${val}')`).html(''); }
+        else { $p.addClass('is-empty').css('background-image', '').html('<i class="fa-solid fa-image"></i>'); }
+    };
+
+    requestAnimationFrame(() => {
+        $('#sf-rem-img-upload').on('click', () => $('#sf-rem-img-file').trigger('click'));
+        $('#sf-rem-img-file').on('change', async function () {
+            const file = this.files && this.files[0];
+            const data = await readReminderImageFile(file);
+            this.value = '';
+            if (data) { pending = data; setPreview(data); $('#sf-rem-img-url').val(''); }
+        });
+        $('#sf-rem-img-url').on('input', function () {
+            const v = sanitizeReminderImage($(this).val());
+            pending = v;
+            setPreview(v);
+        });
+        if (cur) {
+            $('#sf-rem-img-remove').on('click', () => {
+                updateReminder(remId, { image: '', imageSend: false });
+                popup.complete(1);
+                if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
+            });
+        }
+        $('#sf-rem-img-save').on('click', () => {
+            const raw = $('#sf-rem-img-url').val()?.trim();
+            // A typed URL wins over a stale preview if both diverge.
+            const finalVal = raw ? sanitizeReminderImage(raw) : pending;
+            if (raw && !finalVal) { toastr.warning(t('rem.img.badUrl'), t('app')); return; }
+            updateReminder(remId, { image: finalVal || '' });
+            popup.complete(1);
+            if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
+        });
+        $('#sf-rem-img-cancel').on('click', () => popup.complete(0));
+    });
+
+    popup.show();
+}
+
 // Wire up all reminder controls inside the open popup. Uses delegated,
 // namespaced handlers on #sf-body-reminders so they survive partial re-renders
 // and never stack across popup reopenings.
@@ -2407,6 +2663,19 @@ function bindReminders() {
     $body.on('change' + NS, '.sf-rem-chatonly-cb', function () {
         updateReminder($(this).data('rem'), { chatOnly: $(this).is(':checked') });
         updateReminderBadge();
+    });
+    // Image: open picker via the attach button or by clicking the thumbnail.
+    $body.on('click' + NS, '.sf-rem-img-attach, .sf-rem-img-thumb', function () {
+        openReminderImagePicker($(this).data('rem'));
+    });
+    // Image: quick-remove button under the thumbnail.
+    $body.on('click' + NS, '.sf-rem-img-clear', function () {
+        updateReminder($(this).data('rem'), { image: '', imageSend: false });
+        rerender();
+    });
+    // Image: toggle "send to model".
+    $body.on('change' + NS, '.sf-rem-img-send-cb', function () {
+        updateReminder($(this).data('rem'), { imageSend: $(this).is(':checked') });
     });
     // Delete reminder
     $body.on('click' + NS, '.sf-rem-delete', function () {
@@ -5049,9 +5318,12 @@ jQuery(async () => {
                 console.log(`[${MODULE_NAME}] Auto-clearing ${activeInjections.size} injections`);
                 clearAllTools();
             }
+            // Remove any temporarily-attached reminder reference image.
+            try { detachReminderImage(); } catch { /* ignore */ }
         });
         eventSource.on(event_types.GENERATION_STOPPED, () => {
             if (getSettings().autoClear && activeInjections.size > 0) clearAllTools();
+            try { detachReminderImage(); } catch { /* ignore */ }
         });
 
         // ==== Reminders ====
@@ -5091,12 +5363,15 @@ jQuery(async () => {
         try {
             eventSource.on(event_types.GENERATION_STARTED, () => {
                 try { syncReminderInjections(false); } catch { /* ignore */ }
+                // Attach an active reminder's reference image to the outgoing
+                // user message (best-effort multimodal). Removed in GEN_ENDED.
+                try { attachReminderImageToGeneration(); } catch { /* ignore */ }
             });
         } catch { /* event not present on this build */ }
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.11.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.12.0 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }

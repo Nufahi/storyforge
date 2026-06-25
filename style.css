@@ -17,6 +17,28 @@
 
 /* StoryForge v3.3 */
 
+/* === Theme tokens ===
+ * Derived from the active SillyTavern theme via color-mix so panels feel
+ * native to whatever skin the user runs (inspired by Background Manager).
+ * Every token has a hard fallback for browsers without color-mix support. */
+:root {
+    --sf-accent: var(--SmartThemeQuoteColor, #c9a227);
+    --sf-text: var(--SmartThemeBodyColor, #ddd);
+    --sf-muted: color-mix(in srgb, var(--SmartThemeBodyColor, #ddd) 60%, var(--SmartThemeEmColor, #999) 40%);
+    --sf-border: color-mix(in srgb, var(--SmartThemeBorderColor, rgba(255,255,255,.16)) 78%, transparent);
+    --sf-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(255,255,255,.04)) 86%, var(--SmartThemeBodyColor, #fff) 4%);
+    --sf-surface-strong: color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(255,255,255,.06)) 78%, var(--SmartThemeBodyColor, #fff) 8%);
+    --sf-surface-soft: color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(255,255,255,.04)) 70%, transparent);
+    --sf-accent-soft: color-mix(in srgb, var(--sf-accent) 16%, transparent);
+    --sf-accent-line: color-mix(in srgb, var(--sf-accent) 48%, var(--sf-border) 52%);
+    --sf-danger: #e06464;
+    --sf-ok: #5cb85c;
+    --sf-radius: 12px;
+    --sf-radius-lg: 16px;
+    --sf-shadow: 0 8px 24px rgba(0,0,0,.28);
+    --sf-shadow-soft: 0 4px 14px rgba(0,0,0,.18);
+}
+
 #storyforge_menu_btn .fa-fw { margin-right: 5px; }
 
 /* === Popup wrapper === */
@@ -2151,5 +2173,333 @@
     .sf-cc-key-row input,
     .sf-cc-model-row input {
         flex: 1 1 100%;
+    }
+}
+
+/* ============================================================
+   ⊹ STYLE REFRESH ⊹  — Background-Manager-inspired polish for the
+   Reminders section, the Choice Cards settings panel and the Quick
+   Inserts panel. Appended last so it layers cleanly over the base
+   rules; uses the --sf-* theme tokens (color-mix on the active ST
+   theme) for soft accents, rounded cards and tactile hover states.
+   ============================================================ */
+
+/* ---- Reminders: intro ---- */
+.storyforge-popup .sf-reminders-intro {
+    color: var(--sf-muted);
+    padding: 8px 10px;
+    border-radius: var(--sf-radius);
+    background: var(--sf-surface-soft);
+    border: 1px solid var(--sf-border);
+}
+
+/* ---- Reminders: folder card ---- */
+.storyforge-popup .sf-folder {
+    border: 1px solid var(--sf-border);
+    border-radius: var(--sf-radius-lg);
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--sf-accent) 7%, transparent) 0%, transparent 26%),
+        var(--sf-surface);
+    box-shadow: var(--sf-shadow-soft);
+    overflow: hidden;
+    transition: border-color .18s ease, box-shadow .18s ease;
+}
+.storyforge-popup .sf-folder:hover {
+    border-color: var(--sf-accent-line);
+}
+.storyforge-popup .sf-folder-head {
+    border-bottom: 1px solid var(--sf-border);
+    background: var(--sf-surface-soft);
+}
+.storyforge-popup .sf-folder-toggle { color: var(--sf-accent); }
+.storyforge-popup .sf-folder-name:hover,
+.storyforge-popup .sf-folder-name:focus {
+    border-color: var(--sf-accent-line);
+    background: var(--sf-surface-strong);
+}
+.storyforge-popup .sf-folder-add:hover { color: var(--sf-ok); }
+.storyforge-popup .sf-folder-delete:hover { color: var(--sf-danger); }
+
+/* ---- Reminders: reminder row ---- */
+.storyforge-popup .sf-reminder {
+    border: 1px solid var(--sf-border);
+    border-radius: var(--sf-radius);
+    background: var(--sf-surface-strong);
+    transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.storyforge-popup .sf-reminder:hover {
+    border-color: var(--sf-accent-line);
+    background: var(--sf-surface-soft);
+}
+.storyforge-popup .sf-reminder.open {
+    border-color: var(--sf-accent-line);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sf-accent) 18%, transparent);
+}
+/* Enabled reminders get a subtle accent rail on the left. */
+.storyforge-popup .sf-reminder:has(.sf-rem-enabled:checked) {
+    border-left: 3px solid var(--sf-accent);
+}
+/* Ephemeral (consequence) reminders read as a warm "danger" tint. */
+.storyforge-popup .sf-reminder.sf-rem-ephemeral {
+    border-left: 3px solid color-mix(in srgb, var(--sf-danger) 70%, var(--sf-accent) 30%);
+    background: color-mix(in srgb, var(--sf-danger) 7%, var(--sf-surface-strong) 93%);
+}
+.storyforge-popup .sf-rem-enabled { accent-color: var(--sf-accent); }
+.storyforge-popup .sf-rem-toggle { color: var(--sf-muted); }
+.storyforge-popup .sf-rem-label:hover,
+.storyforge-popup .sf-rem-label:focus {
+    border-color: var(--sf-accent-line);
+    background: var(--sf-surface-strong);
+}
+.storyforge-popup .sf-reminder-status {
+    color: var(--sf-accent);
+    background: var(--sf-accent-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sf-accent) 28%, transparent);
+    font-weight: 600;
+}
+.storyforge-popup .sf-rem-delete:hover { color: var(--sf-danger); }
+.storyforge-popup .sf-rem-prompt:focus {
+    border-color: var(--sf-accent-line);
+    box-shadow: 0 0 0 2px var(--sf-accent-soft);
+}
+.storyforge-popup .sf-reminder-opts select:focus,
+.storyforge-popup .sf-reminder-opts input[type="number"]:focus {
+    border-color: var(--sf-accent-line);
+    outline: none;
+}
+
+/* ---- Reminders: image block ---- */
+.storyforge-popup .sf-rem-image {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px solid var(--sf-border);
+    border-radius: var(--sf-radius);
+    background: var(--sf-surface-soft);
+}
+.storyforge-popup .sf-rem-image.has-img {
+    border-color: var(--sf-accent-line);
+}
+.storyforge-popup .sf-rem-img-thumb {
+    flex: 0 0 84px;
+    width: 84px;
+    align-self: stretch;
+    min-height: 84px;
+    border-radius: 10px;
+    border: 1px solid var(--sf-border);
+    background-color: rgba(0,0,0,.25);
+    background-size: cover;
+    background-position: center;
+    cursor: pointer;
+    transition: transform .1s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.storyforge-popup .sf-rem-img-thumb:hover {
+    border-color: var(--sf-accent);
+    box-shadow: 0 0 0 2px var(--sf-accent-soft);
+}
+.storyforge-popup .sf-rem-img-thumb:active { transform: scale(.98); }
+.storyforge-popup .sf-rem-img-thumb.is-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sf-muted);
+    font-size: 22px;
+    border-style: dashed;
+}
+.storyforge-popup .sf-rem-img-side {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 7px;
+}
+.storyforge-popup .sf-rem-img-attach {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 999px;
+    color: var(--sf-accent);
+    background: var(--sf-accent-soft);
+    border: 1px solid var(--sf-accent-line);
+    transition: background .15s ease, transform .08s ease;
+}
+.storyforge-popup .sf-rem-img-attach:hover {
+    background: color-mix(in srgb, var(--sf-accent) 26%, transparent);
+}
+.storyforge-popup .sf-rem-img-attach:active { transform: scale(.97); }
+.storyforge-popup .sf-rem-img-send {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--sf-muted);
+    cursor: pointer;
+}
+.storyforge-popup .sf-rem-img-send input { accent-color: var(--sf-accent); cursor: pointer; margin: 0; }
+.storyforge-popup .sf-rem-img-clear {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    align-self: flex-start;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: var(--sf-muted);
+    border-radius: 6px;
+    transition: color .15s ease, background .15s ease;
+}
+.storyforge-popup .sf-rem-img-clear:hover {
+    color: var(--sf-danger);
+    background: color-mix(in srgb, var(--sf-danger) 12%, transparent);
+}
+
+/* ---- Reminders: image picker modal ---- */
+.sf-rem-img-modal { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
+.sf-rem-img-modal-title {
+    margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px;
+    color: var(--sf-text);
+}
+.sf-rem-img-modal-title i { color: var(--sf-accent); }
+.sf-rem-img-modal-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--sf-muted); }
+.sf-rem-img-preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--sf-radius);
+    border: 1px solid var(--sf-border);
+    background-color: rgba(0,0,0,.3);
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+.sf-rem-img-preview.is-empty {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sf-muted); font-size: 34px; border-style: dashed;
+}
+.sf-rem-img-modal-label { font-size: 12px; font-weight: 600; color: var(--sf-muted); }
+.sf-rem-img-url { width: 100%; }
+.sf-rem-img-modal-or {
+    text-align: center; font-size: 11px; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--sf-muted);
+}
+.sf-rem-img-upload-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%;
+}
+.sf-rem-img-modal-buttons {
+    display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 4px;
+}
+.sf-rem-img-remove-btn { margin-right: auto; color: var(--sf-danger) !important; }
+.sf-qi-save-btn, .sf-rem-img-modal .sf-qi-save-btn {
+    background: var(--sf-accent-soft) !important;
+    border-color: var(--sf-accent-line) !important;
+    color: var(--sf-accent) !important;
+}
+
+/* ---- Quick Inserts + Choice Cards panels: card-like rows ---- */
+#sf-qi-panel .sf-qi-info,
+#sf-cc-panel .sf-qi-info {
+    color: var(--sf-muted);
+    background: var(--sf-surface-soft);
+    border: 1px solid var(--sf-border);
+    border-radius: var(--sf-radius);
+    padding: 8px 10px;
+    font-style: normal;
+}
+#sf-qi-panel .sf-qi-settings-row {
+    border: 1px solid var(--sf-border);
+    border-radius: 10px;
+    background: var(--sf-surface-strong);
+    transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+#sf-qi-panel .sf-qi-settings-row:hover {
+    border-color: var(--sf-accent-line);
+    background: var(--sf-surface-soft);
+    box-shadow: var(--sf-shadow-soft);
+}
+#sf-qi-panel .sf-qi-preview {
+    border-color: var(--sf-border);
+    background: var(--sf-accent-soft);
+    color: var(--sf-text);
+    font-weight: 600;
+}
+#sf-qi-panel .sf-qi-desc { color: var(--sf-muted); }
+#sf-qi-panel .sf-qi-drag-handle { color: var(--sf-muted); }
+#sf-qi-panel .sf-qi-edit-btn:hover { color: var(--sf-accent); }
+#sf-qi-panel .sf-qi-del-btn:hover { color: var(--sf-danger); }
+
+/* Option rows (the toggles at the top of each panel). */
+#sf-qi-panel .sf-qi-option-row,
+#sf-cc-panel .sf-qi-option-row,
+#sf-cc-panel .sf-cc-form-row {
+    border-radius: 10px;
+    transition: background .15s ease;
+}
+#sf-qi-panel .sf-qi-option-row:hover,
+#sf-cc-panel .sf-qi-option-row:hover {
+    background: var(--sf-surface-soft);
+}
+
+/* Choice Cards sub-section headers + indented blocks read as grouped cards. */
+#sf-cc-panel .sf-cc-subhead {
+    border-top: 1px solid var(--sf-border);
+    color: var(--sf-text);
+}
+#sf-cc-panel .sf-cc-subhead i { color: var(--sf-accent); opacity: 1; }
+#sf-cc-panel .sf-cc-dice-block,
+#sf-cc-panel .sf-cc-conseq-block,
+#sf-cc-panel .sf-cc-stats-block,
+#sf-cc-panel .sf-cc-builtin-block,
+#sf-cc-panel .sf-cc-api-st-profile {
+    border-left: 2px solid var(--sf-accent-line);
+    background: var(--sf-surface-soft);
+    border-radius: 0 10px 10px 0;
+    padding: 8px 10px;
+}
+
+/* Accent the primary action buttons across both panels. */
+#sf-qi-panel .sf-qi-actions .menu_button:hover,
+#sf-cc-panel .sf-qi-actions .menu_button:hover {
+    border-color: var(--sf-accent-line);
+    color: var(--sf-accent);
+}
+
+/* Inputs across both panels get a consistent accent focus ring. */
+#sf-qi-panel input:focus,
+#sf-qi-panel select:focus,
+#sf-qi-panel textarea:focus,
+#sf-cc-panel input:focus,
+#sf-cc-panel select:focus,
+#sf-cc-panel textarea:focus {
+    border-color: var(--sf-accent-line) !important;
+    box-shadow: 0 0 0 2px var(--sf-accent-soft) !important;
+    outline: none !important;
+}
+
+/* Mobile: stack the image block so the thumbnail stays usable. */
+@media (max-width: 600px) {
+    .storyforge-popup .sf-rem-img-thumb { flex-basis: 64px; width: 64px; min-height: 64px; }
+}
+
+/* Graceful fallback: very old engines without :has() simply skip the rail. */
+@supports not (selector(:has(*))) {
+    .storyforge-popup .sf-reminder:has(.sf-rem-enabled:checked) { border-left-width: 1px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .storyforge-popup .sf-folder,
+    .storyforge-popup .sf-reminder,
+    .storyforge-popup .sf-rem-img-thumb,
+    .storyforge-popup .sf-rem-img-attach,
+    #sf-qi-panel .sf-qi-settings-row {
+        transition: none;
     }
 }

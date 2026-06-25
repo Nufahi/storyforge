@@ -79,6 +79,21 @@
 
   "rem.status.ttl": "{{n}} left",
 
+  "rem.img.add": "Add image",
+  "rem.img.change": "Change image",
+  "rem.img.remove": "Remove image",
+  "rem.img.send": "Send to model",
+  "rem.img.sendHint": "Attach this image to the next generation so multimodal models can see it (best-effort; only works on vision-capable backends).",
+  "rem.img.pickerTitle": "Reminder image",
+  "rem.img.pickerHint": "Attach a visual reference (e.g. an outfit) shown next to this reminder. Paste a gallery / web image URL, or upload a file.",
+  "rem.img.urlLabel": "Image URL or gallery path",
+  "rem.img.urlPh": "https://… or /user/images/outfit.png",
+  "rem.img.or": "— or —",
+  "rem.img.upload": "Upload from device",
+  "rem.img.notImage": "That file is not an image.",
+  "rem.img.tooBig": "Image is too large (max ~2.5 MB).",
+  "rem.img.badUrl": "That image URL / path is not valid.",
+
   "dm.section.title": "Director Mode",
   "dm.intro": "An autonomous co-narrator. After each reply the director rolls the dice and may secretly queue one of your story tools for the next response — random events, twists and new faces keep the story alive without you pressing anything.",
   "dm.enable": "Enable Director Mode",
