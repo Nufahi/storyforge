@@ -188,6 +188,41 @@
     }
 }
 
+/* === Tools header (title + collapse/expand-all toggle) === */
+.storyforge-tools-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.storyforge-tools-head h3 { margin: 0; }
+.sf-tools-toggle { flex: 0 0 auto; }
+
+/* Collapse the whole tool grid (header stays visible) */
+.storyforge-grid.sf-grid-collapsed { display: none; }
+
+/* Reorder arrows on each tool tile */
+.storyforge-tool-btn .sf-tool-reorder {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    margin-right: 6px; /* clear the absolutely-positioned delete x */
+    opacity: 0;
+    transition: opacity .15s;
+}
+.storyforge-tool-btn .sf-tool-reorder .sf-reorder {
+    width: 20px; height: 20px; font-size: 10px;
+}
+@media (hover: hover) {
+    .storyforge-tool-btn:hover .sf-tool-reorder { opacity: .7; }
+}
+/* On touch devices there is no hover — keep the arrows always visible */
+@media (hover: none) {
+    .storyforge-tool-btn .sf-tool-reorder { opacity: .55; }
+}
+
 /* === Add tool === */
 .storyforge-add-btn {
     display: flex;

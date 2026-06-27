@@ -396,6 +396,7 @@ const defaultSettings = Object.freeze({
     depth: 1,
     autoClear: true,
     tools: null,
+    toolsCollapsed: false,      // collapse the top tool-button grid (header stays)
     quickInserts: null,
     // ==== Reminders (prompt folders) ====
     // Folders group periodic / persistent prompt injections. Each reminder
@@ -652,6 +653,12 @@ function setToolPromptCollapsed(toolId, collapsed) {
 // Collapse / expand every tool's prompt editor in one shot.
 function setAllToolPromptsCollapsed(collapsed) {
     for (const tool of getTools()) tool.promptCollapsed = !!collapsed;
+    saveSettings();
+}
+
+// Collapse / expand the top tool-button grid (the Plot Twist / New NPC tiles).
+function setToolGridCollapsed(collapsed) {
+    getSettings().toolsCollapsed = !!collapsed;
     saveSettings();
 }
 
@@ -2287,21 +2294,32 @@ function buildPlotThreadsHtml() {
         <div class="sf-ss-hint">${escapeHtml(t('pt.detectHint'))}</div>`;
 }
 
-function buildPopupHtml() {
-    const settings = getSettings();
+// Build just the tool tiles (Plot Twist / New NPC...) plus the "+ New tool"
+// card. Split out so reorder / collapse-all can refresh the grid in place
+// without rebuilding the whole popup (keeps scroll position on mobile).
+function buildToolGridHtml() {
     const tools = getTools();
-
-    const toolButtons = tools.map(tool => {
+    const toolButtons = tools.map((tool, idx) => {
         const isActive = activeInjections.has(tool.id) ? ' storyforge-active' : '';
         const id = escapeHtml(tool.id);
+        const upDis = idx === 0 ? ' sf-reorder-dis' : '';
+        const downDis = idx === tools.length - 1 ? ' sf-reorder-dis' : '';
         return `<div class="storyforge-tool-btn${isActive}" data-tool="${id}">
             <span class="storyforge-tool-icon"><i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i></span>
             <span class="storyforge-tool-label">${escapeHtml(tool.label)}</span>
+            <span class="sf-tool-reorder">
+                <span class="sf-reorder sf-tool-up${upDis}" data-tool="${id}" title="${escapeHtml(t('common.moveUp'))}"><i class="fa-solid fa-chevron-up"></i></span>
+                <span class="sf-reorder sf-tool-down${downDis}" data-tool="${id}" title="${escapeHtml(t('common.moveDown'))}"><i class="fa-solid fa-chevron-down"></i></span>
+            </span>
             <span class="storyforge-tool-delete fa-solid fa-xmark" data-deletetool="${id}" title="${escapeHtml(t('common.delete'))}"></span>
         </div>`;
     }).join('');
-
     const addBtn = `<div class="storyforge-add-btn" id="sf-add-tool-btn"><i class="fa-solid fa-plus"></i> ${escapeHtml(t('tool.popup.newTool'))}</div>`;
+    return toolButtons + addBtn;
+}
+
+function buildPopupHtml() {
+    const settings = getSettings();
 
     const newToolForm = `<div class="storyforge-new-tool-form" id="sf-new-tool-form" style="display:none">
         <span class="sf-form-label">${escapeHtml(t('tool.popup.newToolFormTitle'))}</span>
@@ -2315,9 +2333,15 @@ function buildPopupHtml() {
 
     const promptEditors = buildPromptEditorsHtml();
 
+    const gridCollapsed = settings.toolsCollapsed === true;
     return `<div class="storyforge-popup">
-        <h3><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('tool.popup.title'))}</h3>
-        <div class="storyforge-grid">${toolButtons}${addBtn}</div>
+        <div class="storyforge-tools-head">
+            <h3><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('tool.popup.title'))}</h3>
+            <button type="button" class="sf-collapse-all sf-tools-toggle" id="sf-tools-toggle" title="${escapeHtml(gridCollapsed ? t('common.expandAll') : t('common.collapseAll'))}">
+                <i class="fa-solid ${gridCollapsed ? 'fa-angles-down' : 'fa-angles-up'}"></i> ${escapeHtml(gridCollapsed ? t('common.expandAll') : t('common.collapseAll'))}
+            </button>
+        </div>
+        <div class="storyforge-grid${gridCollapsed ? ' sf-grid-collapsed' : ''}" id="sf-tools-grid">${buildToolGridHtml()}</div>
         ${newToolForm}
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-prompts">
@@ -2397,6 +2421,8 @@ async function openStoryForgePopup() {
         // Tool inject/toggle
         $(document).off('click.sf-tool').on('click.sf-tool', '.storyforge-tool-btn', function (e) {
             if ($(e.target).hasClass('storyforge-tool-delete') || $(e.target).closest('.storyforge-tool-delete').length) return;
+            // Don't toggle the tool when nudging it up/down with the arrows.
+            if ($(e.target).closest('.sf-tool-reorder, .sf-reorder').length) return;
             const toolId = $(this).data('tool');
             const injected = injectTool(toolId);
             if (injected) {
@@ -2404,6 +2430,23 @@ async function openStoryForgePopup() {
             } else {
                 $(this).removeClass('storyforge-active');
             }
+        });
+
+        // Tool grid: reorder a tile up / down.
+        $(document).off('click.sf-tool-move').on('click.sf-tool-move', '.sf-tool-up, .sf-tool-down', function (e) {
+            e.stopPropagation();
+            const toolId = $(this).data('tool');
+            const dir = $(this).hasClass('sf-tool-up') ? -1 : 1;
+            if (moveTool(toolId, dir)) refreshToolGrid();
+        });
+
+        // Tool grid: collapse / expand the whole grid in one shot.
+        $(document).off('click.sf-tools-toggle').on('click.sf-tools-toggle', '#sf-tools-toggle', function () {
+            const collapse = !($('#sf-tools-grid').hasClass('sf-grid-collapsed'));
+            setToolGridCollapsed(collapse);
+            $('#sf-tools-grid').toggleClass('sf-grid-collapsed', collapse);
+            $(this).attr('title', collapse ? t('common.expandAll') : t('common.collapseAll'));
+            $(this).html(`<i class="fa-solid ${collapse ? 'fa-angles-down' : 'fa-angles-up'}"></i> ${escapeHtml(collapse ? t('common.expandAll') : t('common.collapseAll'))}`);
         });
 
         // Delete tool
@@ -2423,8 +2466,8 @@ async function openStoryForgePopup() {
             }
         });
 
-        // Show new tool form
-        $('#sf-add-tool-btn').on('click', () => {
+        // Show new tool form (delegated: the grid gets re-rendered on reorder)
+        $(document).off('click.sf-add').on('click.sf-add', '#sf-add-tool-btn', () => {
             $('#sf-new-tool-form').slideDown(200);
             $('#sf-new-name').focus();
         });
@@ -2527,7 +2570,7 @@ async function openStoryForgePopup() {
 
     await popup.show();
     currentPopup = null;
-    $(document).off('click.sf-tool click.sf-del input.sf-prompt click.sf-rename click.sf-prompt-toggle click.sf-prompt-move click.sf-prompt-all');
+    $(document).off('click.sf-tool click.sf-tool-move click.sf-tools-toggle click.sf-add click.sf-del input.sf-prompt click.sf-rename click.sf-prompt-toggle click.sf-prompt-move click.sf-prompt-all');
 }
 
 function bindSections() {
@@ -2964,14 +3007,21 @@ function refreshPromptsList() {
     $list.html(buildPromptEditorsHtml());
 }
 
+// Re-render only the top tool-button grid (after reorder) so we keep scroll
+// position. Handlers are delegated on $(document), so no rebinding needed.
+function refreshToolGrid() {
+    const $grid = $('#sf-tools-grid');
+    if (!$grid.length) return;
+    $grid.html(buildToolGridHtml());
+}
+
 function refreshPopupContent() {
     const container = $('.storyforge-popup');
     if (!container.length) return;
     container.replaceWith(buildPopupHtml());
     bindSections();
 
-    // Rebind form
-    $('#sf-add-tool-btn').on('click', () => { $('#sf-new-tool-form').slideDown(200); $('#sf-new-name').focus(); });
+    // Rebind form (#sf-add-tool-btn is delegated via .sf-add, no rebind needed)
     $('#sf-new-cancel').on('click', () => { $('#sf-new-tool-form').slideUp(200); });
     $('#sf-new-save').on('click', () => {
         const name = $('#sf-new-name').val().trim();
