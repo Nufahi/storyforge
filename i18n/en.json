@@ -12,6 +12,10 @@
   "common.cleared": "Cleared",
   "common.tool": "Tool",
   "common.deleted": "Deleted",
+  "common.moveUp": "Move up",
+  "common.moveDown": "Move down",
+  "common.expandAll": "Expand all",
+  "common.collapseAll": "Collapse all",
 
   "tool.cleared": "{{name}} cleared",
   "tool.queued": "{{name}} queued",
@@ -93,6 +97,15 @@
   "rem.img.notImage": "That file is not an image.",
   "rem.img.tooBig": "Image is too large (max ~2.5 MB).",
   "rem.img.badUrl": "That image URL / path is not valid.",
+
+  "rem.describe.btn": "Describe with AI",
+  "rem.describe.hint": "Let the Choice Cards built-in vision model look at this image and write a text description straight into the reminder — perfect for outfits, so the main model reads words instead of needing to see the image.",
+  "rem.describe.working": "Looking…",
+  "rem.describe.done": "Image described and added to the reminder.",
+  "rem.describe.noImage": "Add an image first.",
+  "rem.describe.needBuiltin": "Set up the Choice Cards built-in API (vision-capable model + endpoint + key) first — that's the API used to describe images.",
+  "rem.describe.failed": "Could not describe image: {{err}}",
+  "rem.describe.prompt": "You are a vision assistant. Look at the image and write a concise, vivid description in plain prose for a roleplay model to keep details consistent (e.g. a character's outfit, appearance, a location). Focus on concrete visual facts: colors, materials, clothing, accessories, hairstyle, notable features. Do not add commentary, headings, or markdown — just the description.",
 
   "dm.section.title": "Director Mode",
   "dm.intro": "An autonomous co-narrator. After each reply the director rolls the dice and may secretly queue one of your story tools for the next response — random events, twists and new faces keep the story alive without you pressing anything.",

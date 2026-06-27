@@ -5,3 +5,6 @@ Thumbs.db
 
 # Local-only files
 *.local.json
+
+# Accidentally-dropped local helper script (Chinese ST assistant export)
+酒馆助手脚本-输入助手.json

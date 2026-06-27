@@ -48,7 +48,9 @@ Persistent and periodic prompts that auto-inject so the model never forgets a de
 - **Every N replies** — the prompt surfaces once every N model replies, then steps back (counts only the AI's replies)
 - Per-reminder **injection depth** (0-10) and **role** (System / User / Assistant)
 - A small status tag shows when each reminder will next fire (`always on`, `next reply`, `in 2`...)
-- **Reference image** — attach a thumbnail to any reminder (paste a gallery / web image URL or upload a file). Keep a visual of an outfit, a location or a face right next to the note. Flip **Send to model** and StoryForge will best-effort attach that image to the next generation so vision-capable backends can actually *see* it.
+- **Reference image** — attach a thumbnail to any reminder (paste a gallery / web image URL or upload a file). Keep a visual of an outfit, a location or a face right next to the note.
+- **Describe with AI** — hit the eye button and the Choice Cards built-in **vision** model looks at the image and writes a plain-text description straight into the reminder. The main model then reads *words* (perfect for outfits) instead of needing to see the image at all. (Still want to ship the raw picture? Flip **Send to model** to best-effort attach it to the next generation for vision-capable backends.)
+- **Reorder & collapse** — drag reminders up/down with the arrows, and collapse/expand every reminder (or every Custom Prompt) at once with the toolbar buttons — handy when you have a dozen of them.
 
 Example: put your persona's outfit description in an "Appearance" folder set to **Every 2 replies** — it auto-injects on every other AI reply so the model keeps clothing consistent.
 

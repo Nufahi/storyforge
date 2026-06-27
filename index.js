@@ -629,6 +629,32 @@ function resetToDefaults() {
     saveSettings();
 }
 
+// Move a tool up (dir = -1) or down (dir = +1) in the ordered tools list.
+// Returns true if the order actually changed.
+function moveTool(toolId, dir) {
+    const tools = getTools();
+    const i = tools.findIndex(x => x.id === toolId);
+    if (i === -1) return false;
+    const j = i + dir;
+    if (j < 0 || j >= tools.length) return false;
+    [tools[i], tools[j]] = [tools[j], tools[i]];
+    saveSettings();
+    return true;
+}
+
+// Per-tool "prompt editor collapsed" flag, stored on the tool object so it
+// survives reloads. Tools created before this feature default to expanded.
+function setToolPromptCollapsed(toolId, collapsed) {
+    const tool = getTools().find(x => x.id === toolId);
+    if (tool) { tool.promptCollapsed = !!collapsed; saveSettings(); }
+}
+
+// Collapse / expand every tool's prompt editor in one shot.
+function setAllToolPromptsCollapsed(collapsed) {
+    for (const tool of getTools()) tool.promptCollapsed = !!collapsed;
+    saveSettings();
+}
+
 // ==== Quick Inserts ====
 
 function getQuickInserts() {
@@ -758,6 +784,33 @@ function updateReminder(remId, data) {
     saveSettings();
     // Re-sync injection state immediately so toggling reflects without a reply.
     syncReminderInjections();
+}
+
+// Move a reminder up (dir = -1) or down (dir = +1) within its folder.
+// Reordering respects the visible (current-chat) subset so the arrows feel
+// right even when chat-only reminders from other chats are hidden: we swap the
+// reminder with its nearest visible neighbour in the requested direction.
+function moveReminder(remId, dir) {
+    const found = findReminder(remId);
+    if (!found) return false;
+    const list = found.folder.reminders || [];
+    const i = list.indexOf(found.reminder);
+    if (i === -1) return false;
+    // Walk to the next index that is visible in the current chat.
+    let j = i + dir;
+    while (j >= 0 && j < list.length && !reminderBelongsToCurrentChat(list[j])) j += dir;
+    if (j < 0 || j >= list.length) return false;
+    [list[i], list[j]] = [list[j], list[i]];
+    saveSettings();
+    return true;
+}
+
+// Collapse / expand every reminder across all folders in one shot.
+function setAllRemindersCollapsed(collapsed) {
+    for (const folder of getReminderFolders()) {
+        for (const rem of folder.reminders || []) rem.collapsed = !!collapsed;
+    }
+    saveSettings();
 }
 
 function deleteReminder(remId) {
@@ -2039,12 +2092,21 @@ function buildReminderImageHtml(rem, rid) {
     const clearBtn = hasImg
         ? `<button type="button" class="sf-rem-img-clear" data-rem="${rid}" title="${escapeHtml(t('rem.img.remove'))}"><i class="fa-solid fa-xmark"></i> ${escapeHtml(t('rem.img.remove'))}</button>`
         : '';
+    // "Describe with AI": ask the Choice-Cards built-in (vision) model to read
+    // the image and write a text description straight into the reminder, so the
+    // main model gets words (perfect for outfits) instead of needing vision.
+    const describeBtn = hasImg
+        ? `<button type="button" class="sf-rem-img-describe" data-rem="${rid}" title="${escapeHtml(t('rem.describe.hint'))}">
+               <i class="fa-solid fa-eye"></i> ${escapeHtml(t('rem.describe.btn'))}
+           </button>`
+        : '';
     return `<div class="sf-rem-image ${hasImg ? 'has-img' : ''}" data-rem="${rid}">
         ${thumb}
         <div class="sf-rem-img-side">
             <button type="button" class="sf-rem-img-attach" data-rem="${rid}">
                 <i class="fa-solid fa-paperclip"></i> ${escapeHtml(hasImg ? t('rem.img.change') : t('rem.img.add'))}
             </button>
+            ${describeBtn}
             ${sendToggle}
             ${clearBtn}
         </div>
@@ -2062,7 +2124,7 @@ function buildRemindersHtml() {
         // Hide chat-only reminders that belong to OTHER chats: each chat shows
         // only its own chat-only reminders plus the shared/global ones.
         const visibleReminders = (folder.reminders || []).filter(reminderBelongsToCurrentChat);
-        const remsHtml = visibleReminders.map(rem => {
+        const remsHtml = visibleReminders.map((rem, ridx) => {
             const rid = escapeHtml(rem.id);
             const everyVisible = rem.mode === 'every' ? '' : 'style="display:none"';
             const matchVisible = rem.mode === 'match' ? '' : 'style="display:none"';
@@ -2070,12 +2132,16 @@ function buildRemindersHtml() {
             // the panel compact, especially on mobile. Tap the row to expand.
             const isOpen = rem.collapsed === false;
             const ephClass = (rem.ephemeral || Number.isFinite(rem.ttl)) ? ' sf-rem-ephemeral' : '';
+            const remUpDis = ridx === 0 ? ' sf-reorder-dis' : '';
+            const remDownDis = ridx === visibleReminders.length - 1 ? ' sf-reorder-dis' : '';
             return `<div class="sf-reminder${isOpen ? ' open' : ''}${ephClass}" data-rem="${rid}">
                 <div class="sf-reminder-head" data-rem="${rid}">
                     <i class="fa-solid fa-chevron-right sf-rem-toggle" data-rem="${rid}"></i>
                     <input type="checkbox" class="sf-rem-enabled" data-rem="${rid}" ${rem.enabled ? 'checked' : ''} title="${escapeHtml(t('rem.enable'))}">
                     <input type="text" class="sf-rem-label" data-rem="${rid}" maxlength="60" value="${escapeHtml(rem.label || '')}" placeholder="${escapeHtml(t('rem.labelPh'))}">
                     <span class="sf-reminder-status" data-rem="${rid}">${escapeHtml(reminderStatusText(rem))}</span>
+                    <span class="sf-reorder sf-rem-up${remUpDis}" data-rem="${rid}" title="${escapeHtml(t('common.moveUp'))}"><i class="fa-solid fa-chevron-up"></i></span>
+                    <span class="sf-reorder sf-rem-down${remDownDis}" data-rem="${rid}" title="${escapeHtml(t('common.moveDown'))}"><i class="fa-solid fa-chevron-down"></i></span>
                     <span class="sf-rem-delete fa-solid fa-xmark" data-rem="${rid}" title="${escapeHtml(t('common.delete'))}"></span>
                 </div>
                 <div class="sf-reminder-body">
@@ -2125,6 +2191,10 @@ function buildRemindersHtml() {
     }).join('');
 
     return `<div class="sf-reminders-intro">${escapeHtml(t('rem.intro'))}</div>
+        <div class="sf-collapse-bar">
+            <button type="button" class="sf-collapse-all" id="sf-rem-expand-all"><i class="fa-solid fa-angles-down"></i> ${escapeHtml(t('common.expandAll'))}</button>
+            <button type="button" class="sf-collapse-all" id="sf-rem-collapse-all"><i class="fa-solid fa-angles-up"></i> ${escapeHtml(t('common.collapseAll'))}</button>
+        </div>
         ${foldersHtml}
         <div class="storyforge-add-btn" id="sf-add-folder-btn"><i class="fa-solid fa-folder-plus"></i> ${escapeHtml(t('rem.addFolder'))}</div>`;
 }
@@ -2243,18 +2313,7 @@ function buildPopupHtml() {
         </div>
     </div>`;
 
-    const promptEditors = tools.map(tool => {
-        const id = escapeHtml(tool.id);
-        return `<div class="storyforge-prompt-item">
-            <div class="sf-prompt-label" data-tool="${id}">
-                <i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i>
-                <span class="sf-label-text">${escapeHtml(tool.label)}</span>
-                <i class="fa-solid fa-pen" style="font-size:9px"></i>
-                <span class="sf-rename-hint">${escapeHtml(t('tool.popup.renameHint'))}</span>
-            </div>
-            <textarea class="sf-prompt-edit" data-tool="${id}" placeholder="${escapeHtml((tool.prompt || '').substring(0, 100))}...">${escapeHtml(tool.prompt || '')}</textarea>
-        </div>`;
-    }).join('');
+    const promptEditors = buildPromptEditorsHtml();
 
     return `<div class="storyforge-popup">
         <h3><i class="fa-solid fa-wand-magic-sparkles"></i> ${escapeHtml(t('tool.popup.title'))}</h3>
@@ -2265,7 +2324,13 @@ function buildPopupHtml() {
                 <h3><i class="fa-solid fa-pen-to-square"></i> ${escapeHtml(t('tool.popup.customPrompts'))}</h3>
                 <i class="fa-solid fa-chevron-down"></i>
             </div>
-            <div class="storyforge-section-body" id="sf-body-prompts">${promptEditors}</div>
+            <div class="storyforge-section-body" id="sf-body-prompts">
+                <div class="sf-collapse-bar">
+                    <button type="button" class="sf-collapse-all" id="sf-prompts-expand-all"><i class="fa-solid fa-angles-down"></i> ${escapeHtml(t('common.expandAll'))}</button>
+                    <button type="button" class="sf-collapse-all" id="sf-prompts-collapse-all"><i class="fa-solid fa-angles-up"></i> ${escapeHtml(t('common.collapseAll'))}</button>
+                </div>
+                <div id="sf-prompts-list">${promptEditors}</div>
+            </div>
         </div>
         <div class="storyforge-section">
             <div class="storyforge-section-toggle" id="sf-toggle-reminders">
@@ -2323,6 +2388,12 @@ async function openStoryForgePopup() {
     currentPopup = popup;
 
     requestAnimationFrame(() => {
+        // Tag the outer dialog so CSS can blow the panel up to a full-screen
+        // sheet on phones (mirrors the ST-Quotes extension behaviour). We mark
+        // the closest .popup wrapper around our content so the rule is scoped
+        // strictly to StoryForge and never touches other ST popups.
+        const $wrap = $('.storyforge-popup').closest('.popup, dialog');
+        $wrap.addClass('sf-popup-fullscreen');
         // Tool inject/toggle
         $(document).off('click.sf-tool').on('click.sf-tool', '.storyforge-tool-btn', function (e) {
             if ($(e.target).hasClass('storyforge-tool-delete') || $(e.target).closest('.storyforge-tool-delete').length) return;
@@ -2401,6 +2472,31 @@ async function openStoryForgePopup() {
             });
         });
 
+        // Prompt editor: collapse / expand a single tool's textarea.
+        $(document).off('click.sf-prompt-toggle').on('click.sf-prompt-toggle', '.sf-prompt-head', function (e) {
+            // Don't toggle when interacting with the rename label or reorder arrows.
+            if ($(e.target).closest('.sf-prompt-label, .sf-reorder').length) return;
+            const toolId = $(this).data('tool');
+            const $item = $(this).closest('.storyforge-prompt-item');
+            const open = $item.toggleClass('open').hasClass('open');
+            setToolPromptCollapsed(toolId, !open);
+        });
+
+        // Prompt editor: reorder up / down.
+        $(document).off('click.sf-prompt-move').on('click.sf-prompt-move', '.sf-prompt-up, .sf-prompt-down', function (e) {
+            e.stopPropagation();
+            const toolId = $(this).data('tool');
+            const dir = $(this).hasClass('sf-prompt-up') ? -1 : 1;
+            if (moveTool(toolId, dir)) refreshPromptsList();
+        });
+
+        // Prompt editor: expand / collapse all at once.
+        $(document).off('click.sf-prompt-all').on('click.sf-prompt-all', '#sf-prompts-expand-all, #sf-prompts-collapse-all', function () {
+            const collapse = this.id === 'sf-prompts-collapse-all';
+            setAllToolPromptsCollapsed(collapse);
+            refreshPromptsList();
+        });
+
         // Settings
         $('#sf-pop-enabled').on('change', function () { getSettings().enabled = $(this).is(':checked'); saveSettings(); });
         $('#sf-pop-depth').on('input', function () { getSettings().depth = parseInt($(this).val(), 10) || 1; saveSettings(); });
@@ -2431,7 +2527,7 @@ async function openStoryForgePopup() {
 
     await popup.show();
     currentPopup = null;
-    $(document).off('click.sf-tool click.sf-del input.sf-prompt click.sf-rename');
+    $(document).off('click.sf-tool click.sf-del input.sf-prompt click.sf-rename click.sf-prompt-toggle click.sf-prompt-move click.sf-prompt-all');
 }
 
 function bindSections() {
@@ -2611,12 +2707,26 @@ function bindReminders() {
     // interactive controls (checkbox / label input / delete). Toggles the
     // class without re-rendering so focus/scroll stay put on mobile.
     $body.on('click' + NS, '.sf-reminder-head', function (e) {
-        if ($(e.target).is('input, .sf-rem-delete') || $(e.target).closest('.sf-rem-delete').length) return;
+        if ($(e.target).is('input, .sf-rem-delete') || $(e.target).closest('.sf-rem-delete, .sf-reorder').length) return;
         const rid = $(this).data('rem');
         const $card = $(this).closest('.sf-reminder');
         const open = $card.toggleClass('open').hasClass('open');
         const found = findReminder(rid);
         if (found) { found.reminder.collapsed = !open; saveSettings(); }
+    });
+
+    // Reminder reorder up / down within its folder.
+    $body.on('click' + NS, '.sf-rem-up, .sf-rem-down', function (e) {
+        e.stopPropagation();
+        const rid = $(this).data('rem');
+        const dir = $(this).hasClass('sf-rem-up') ? -1 : 1;
+        if (moveReminder(rid, dir)) rerender();
+    });
+
+    // Expand / collapse all reminders at once.
+    $body.on('click' + NS, '#sf-rem-expand-all, #sf-rem-collapse-all', function () {
+        setAllRemindersCollapsed(this.id === 'sf-rem-collapse-all');
+        rerender();
     });
 
     // Reminder fields
@@ -2676,6 +2786,32 @@ function bindReminders() {
     // Image: toggle "send to model".
     $body.on('change' + NS, '.sf-rem-img-send-cb', function () {
         updateReminder($(this).data('rem'), { imageSend: $(this).is(':checked') });
+    });
+    // Image: "Describe with AI" — vision model reads the image and writes a
+    // text description into the reminder via the Choice-Cards built-in API.
+    $body.on('click' + NS, '.sf-rem-img-describe', async function () {
+        const $btn = $(this);
+        const rid = $btn.data('rem');
+        const ccs = ccGetSettings();
+        // The vision call goes through the built-in API (own endpoint + model).
+        // If it isn't set up, guide the user to the Choice Cards section.
+        if (ccs.ccApiSource !== 'builtin' || !ccNormalizeUrl(ccs.ccApiUrl) || !(ccs.ccApiModel || '').trim()) {
+            toastr.warning(t('rem.describe.needBuiltin'), t('app'), { timeOut: 6000 });
+            return;
+        }
+        if ($btn.hasClass('sf-busy')) return;
+        const orig = $btn.html();
+        $btn.addClass('sf-busy').prop('disabled', true)
+            .html(`<i class="fa-solid fa-spinner fa-spin"></i> ${escapeHtml(t('rem.describe.working'))}`);
+        try {
+            await describeReminderImageToText(rid, { replace: false });
+            toastr.success(t('rem.describe.done'), t('app'), { timeOut: 3000 });
+            rerender();
+        } catch (err) {
+            console.error(`[${MODULE_NAME}] describe image failed`, err);
+            toastr.error(t('rem.describe.failed', { err: String(err?.message || err).slice(0, 160) }), t('app'), { timeOut: 8000 });
+            $btn.removeClass('sf-busy').prop('disabled', false).html(orig);
+        }
     });
     // Delete reminder
     $body.on('click' + NS, '.sf-rem-delete', function () {
@@ -2791,6 +2927,41 @@ function bindPlotThreads() {
         );
         if (confirmed) { deletePlotThread(id); rerender(); }
     });
+}
+
+// Build the per-tool prompt editors (collapsible, reorderable). Shared between
+// the initial popup render and partial refreshes after reorder / collapse-all.
+function buildPromptEditorsHtml() {
+    const tools = getTools();
+    return tools.map((tool, idx) => {
+        const id = escapeHtml(tool.id);
+        const isOpen = tool.promptCollapsed !== true;
+        const upDis = idx === 0 ? ' sf-reorder-dis' : '';
+        const downDis = idx === tools.length - 1 ? ' sf-reorder-dis' : '';
+        return `<div class="storyforge-prompt-item${isOpen ? ' open' : ''}" data-tool="${id}">
+            <div class="sf-prompt-head" data-tool="${id}">
+                <i class="fa-solid fa-chevron-right sf-prompt-toggle" data-tool="${id}"></i>
+                <div class="sf-prompt-label" data-tool="${id}">
+                    <i class="${escapeHtml(sanitizeIcon(tool.icon))}"></i>
+                    <span class="sf-label-text">${escapeHtml(tool.label)}</span>
+                    <i class="fa-solid fa-pen" style="font-size:9px"></i>
+                    <span class="sf-rename-hint">${escapeHtml(t('tool.popup.renameHint'))}</span>
+                </div>
+                <span class="sf-reorder sf-prompt-up${upDis}" data-tool="${id}" title="${escapeHtml(t('common.moveUp'))}"><i class="fa-solid fa-chevron-up"></i></span>
+                <span class="sf-reorder sf-prompt-down${downDis}" data-tool="${id}" title="${escapeHtml(t('common.moveDown'))}"><i class="fa-solid fa-chevron-down"></i></span>
+            </div>
+            <textarea class="sf-prompt-edit" data-tool="${id}" placeholder="${escapeHtml((tool.prompt || '').substring(0, 100))}...">${escapeHtml(tool.prompt || '')}</textarea>
+        </div>`;
+    }).join('');
+}
+
+// Re-render only the Custom Prompts list (after a reorder / collapse-all) so we
+// don't rebuild the whole popup and lose scroll position on mobile. The list
+// handlers are delegated on $(document), so no rebinding is needed.
+function refreshPromptsList() {
+    const $list = $('#sf-prompts-list');
+    if (!$list.length) return;
+    $list.html(buildPromptEditorsHtml());
 }
 
 function refreshPopupContent() {
@@ -3597,6 +3768,114 @@ async function ccCallBuiltinApi({ instructionPrompt, signal }) {
             JSON.stringify(data).slice(0, 300));
     }
     return text;
+}
+
+// Ask the Choice-Cards built-in API (the cheap side model wired up under
+// "API connected to cards") to LOOK at a reminder image and return a plain
+// textual description. We send it as an OpenAI-style multimodal user message
+// (text + image_url). Works with any vision-capable OpenAI-compatible backend
+// (OpenRouter, OpenAI, Groq llava, local llava/llama-vision, ...). The returned
+// text is what we drop straight into the reminder so the MAIN model reads a
+// description instead of needing to see the image itself — great for outfits.
+async function ccDescribeImageWithBuiltin({ image, signal } = {}) {
+    const s = ccGetSettings();
+    const baseUrl = ccNormalizeUrl(s.ccApiUrl);
+    if (!baseUrl) throw new Error('API URL is empty');
+    if (!s.ccApiModel || !s.ccApiModel.trim()) throw new Error('Model is empty');
+    const img = sanitizeReminderImage(image || '');
+    if (!img) throw new Error('No valid image to describe');
+
+    const apiKey = await ccLoadApiKey();
+    if (!apiKey) {
+        throw new Error('API key missing or not readable (allowKeysExposure may be off)');
+    }
+
+    const instruction = ccSubstStMacros(t('rem.describe.prompt'));
+
+    const body = {
+        model: s.ccApiModel.trim(),
+        messages: [
+            { role: 'system', content: instruction },
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: instruction },
+                    { type: 'image_url', image_url: { url: img } },
+                ],
+            },
+        ],
+        temperature: Number.isFinite(+s.ccTemperature) ? +s.ccTemperature : 0.4,
+        max_tokens: Number.isFinite(+s.ccMaxTokens) ? Math.max(64, +s.ccMaxTokens | 0) : 400,
+        stream: false,
+    };
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+    };
+    if (/openrouter\.ai/i.test(baseUrl)) {
+        headers['HTTP-Referer'] = location.origin;
+        headers['X-Title'] = 'SillyTavern StoryForge';
+    }
+
+    let res;
+    try {
+        res = await fetch(`${baseUrl}/chat/completions`, {
+            method: 'POST', headers, body: JSON.stringify(body), signal,
+        });
+    } catch (netErr) {
+        const msg = String(netErr?.message || netErr || '');
+        throw new Error(`Network error: ${msg}. Check the URL / CORS / model.`);
+    }
+
+    if (!res.ok) {
+        let errText = '';
+        try { errText = (await res.text()).slice(0, 400); } catch { /* ignore */ }
+        throw new Error(`HTTP ${res.status} ${res.statusText}: ${errText}`);
+    }
+
+    const data = await res.json();
+    let text = data?.choices?.[0]?.message?.content;
+    // Some providers return the content as an array of parts for vision replies.
+    if (Array.isArray(text)) {
+        text = text.map(p => (typeof p === 'string' ? p : p?.text || '')).join('').trim();
+    }
+    if (typeof text !== 'string') {
+        text = data?.choices?.[0]?.text
+            ?? data?.content?.[0]?.text
+            ?? data?.message?.content
+            ?? null;
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('Empty or unexpected vision response: ' +
+            JSON.stringify(data).slice(0, 300));
+    }
+    return text.trim();
+}
+
+// High-level: describe a reminder's image and write the description into the
+// reminder's prompt text. Returns the description (or throws). The image is
+// kept as a reference thumbnail; only the TEXT is what the main model reads,
+// so "Send to model" gets turned off automatically (no need to ship the image).
+async function describeReminderImageToText(remId, { replace = false } = {}) {
+    const found = findReminder(remId);
+    if (!found) throw new Error('Reminder not found');
+    const rem = found.reminder;
+    const img = sanitizeReminderImage(rem.image || '');
+    if (!img) throw new Error(t('rem.describe.noImage'));
+
+    const desc = await ccDescribeImageWithBuiltin({ image: img });
+
+    const existing = (rem.prompt || '').trim();
+    let next;
+    if (replace || !existing) {
+        next = desc;
+    } else {
+        next = `${existing}\n\n${desc}`;
+    }
+    // The description now carries the info, so stop attaching the raw image.
+    updateReminder(remId, { prompt: next, imageSend: false });
+    return desc;
 }
 
 // GET <baseUrl>/models and return a sorted list of model id strings.

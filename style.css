@@ -63,6 +63,44 @@
 }
 .storyforge-popup h3 i { font-size: 12px; }
 
+/* === Full-screen sheet on mobile (ST-Quotes style) ===
+ * On phones the StoryForge panel takes over the whole viewport instead of
+ * floating as a small centred dialog, so the dense tool grid / reminders /
+ * editors get the room they need. Scoped to .sf-popup-fullscreen so no other
+ * SillyTavern popup is affected. */
+@media (max-width: 600px) {
+    .sf-popup-fullscreen {
+        width: 100dvw !important;
+        max-width: 100dvw !important;
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        margin: 0 !important;
+        top: 0 !important;
+        left: 0 !important;
+        transform: none !important;
+        border-radius: 0 !important;
+        inset: 0 !important;
+    }
+    .sf-popup-fullscreen .popup-body {
+        max-height: 100dvh !important;
+        height: 100dvh !important;
+        display: flex;
+        flex-direction: column;
+    }
+    .sf-popup-fullscreen .popup-content {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .sf-popup-fullscreen .popup-controls {
+        flex: 0 0 auto;
+    }
+    .sf-popup-fullscreen .storyforge-popup {
+        padding-right: 6px;
+    }
+}
+
 /* === Tool grid === */
 .storyforge-grid {
     display: grid;
@@ -186,15 +224,61 @@
 
 /* === Prompt editors === */
 .storyforge-prompt-item { margin-bottom: 10px; }
+
+/* Collapse / expand-all toolbar above the prompt list */
+.sf-collapse-bar {
+    display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.sf-collapse-all {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--sf-border, #444);
+    background: var(--sf-surface-soft, rgba(255,255,255,.04));
+    color: var(--sf-muted, #aaa); cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.sf-collapse-all:hover { background: var(--sf-accent-soft); color: var(--sf-text, #ddd); }
+
+/* Prompt editor head row (toggle + label + reorder) */
+.sf-prompt-head {
+    display: flex; align-items: center; gap: 4px;
+    cursor: pointer; border-radius: 5px;
+    transition: background .15s;
+}
+.sf-prompt-head:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.04)); }
+.sf-prompt-toggle {
+    width: 14px; text-align: center; flex-shrink: 0;
+    color: var(--sf-muted, #999); font-size: 11px;
+    transition: transform .18s;
+}
+.storyforge-prompt-item.open .sf-prompt-toggle { transform: rotate(90deg); }
+
+/* Reorder arrows */
+.sf-reorder {
+    flex-shrink: 0; width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 5px; cursor: pointer; font-size: 11px;
+    color: var(--sf-muted, #999);
+    transition: background .15s, color .15s;
+}
+.sf-reorder:hover { background: var(--sf-accent-soft); color: var(--sf-accent, #c9a227); }
+.sf-reorder.sf-reorder-dis { opacity: .25; pointer-events: none; }
+
+/* Collapse the textarea when the item isn't open */
+.storyforge-prompt-item > textarea { display: none; }
+.storyforge-prompt-item.open > textarea { display: block; }
+
 .sf-prompt-label {
+    flex: 1; min-width: 0;
     display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 600; margin-bottom: 3px;
+    font-size: 12px; font-weight: 600;
     color: var(--SmartThemeBodyColor, #ccc);
     cursor: pointer; padding: 3px 6px; border-radius: 5px;
     transition: background .15s;
     position: relative;
 }
 .sf-prompt-label:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06)); }
+.sf-prompt-label .sf-label-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-prompt-label i:first-child { width: 16px; text-align: center; color: var(--SmartThemeQuoteColor, #999); font-size: 12px; flex-shrink: 0; }
 .sf-rename-hint {
     font-size: 9px; opacity: 0; color: var(--SmartThemeQuoteColor, #777);
@@ -357,6 +441,8 @@
 }
 .sf-rem-delete { cursor: pointer; font-size: 12px; color: var(--SmartThemeQuoteColor, #999); transition: color .15s; padding: 2px; }
 .sf-rem-delete:hover { color: #ff6b6b; }
+/* Reorder arrows inside the reminder head sit tight next to delete. */
+.sf-reminder-head .sf-reorder { flex: 0 0 auto; width: 20px; height: 20px; }
 .sf-rem-prompt {
     width: 100%; min-height: 55px; resize: vertical; margin-top: 6px;
     font-size: 12px; padding: 6px 8px; border-radius: 6px;
@@ -2334,6 +2420,27 @@
     background: color-mix(in srgb, var(--sf-accent) 26%, transparent);
 }
 .storyforge-popup .sf-rem-img-attach:active { transform: scale(.97); }
+.storyforge-popup .sf-rem-img-describe {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 999px;
+    color: var(--sf-text);
+    background: var(--sf-surface-strong);
+    border: 1px solid var(--sf-border);
+    transition: background .15s ease, color .15s ease, transform .08s ease;
+}
+.storyforge-popup .sf-rem-img-describe:hover {
+    color: var(--sf-accent);
+    border-color: var(--sf-accent-line);
+    background: var(--sf-accent-soft);
+}
+.storyforge-popup .sf-rem-img-describe:active { transform: scale(.97); }
+.storyforge-popup .sf-rem-img-describe.sf-busy { opacity: .75; cursor: progress; }
 .storyforge-popup .sf-rem-img-send {
     display: inline-flex;
     align-items: center;
