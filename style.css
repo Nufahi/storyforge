@@ -806,7 +806,10 @@
     padding: 3px 8px; border-radius: 6px; font-size: 12px;
     background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.06));
     color: var(--SmartThemeBodyColor, #ccc);
-    animation: sf-pulse 2s ease-in-out infinite;
+    /* No infinite animation here: a perpetually-pulsing tag inside a
+     * position:fixed + box-shadow badge forces the browser to recomposite a
+     * full-screen layer at 60fps forever, which roasts mobile GPUs (and can
+     * eventually crash the ST tab). The badge is plenty visible without it. */
 }
 .storyforge-active-tag i { color: var(--SmartThemeQuoteColor, #aaa); font-size: 11px; }
 .storyforge-tag-remove { cursor: pointer; opacity: .5; font-size: 10px; transition: opacity .15s; margin-left: 2px; }
@@ -824,7 +827,6 @@
 .storyforge-footer button:hover { background: var(--SmartThemeBlurTintColor, rgba(255,255,255,.12)); }
 
 @keyframes sf-fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-@keyframes sf-pulse { 0%,100% { opacity:1; } 50% { opacity:.7; } }
 
 /* === Quick Inserts Bar === */
 /* Sits inside #send_form so it visually continues the sendbar.
@@ -2643,5 +2645,14 @@
     .storyforge-popup .sf-rem-img-attach,
     #sf-qi-panel .sf-qi-settings-row {
         transition: none;
+    }
+    /* Kill every StoryForge animation outright for users who ask for reduced
+     * motion — covers the badge/card fade-ins and any FontAwesome spinners we
+     * render, so nothing keeps the compositor busy. */
+    .storyforge-active-badge,
+    .storyforge-active-tag,
+    .sf-cc-wrap,
+    #storyforge-active-badge * {
+        animation: none !important;
     }
 }

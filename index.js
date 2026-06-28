@@ -5619,7 +5619,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.11.0 (hidden stat modifiers)...`);
+    console.log(`[${MODULE_NAME}] Loading v1.14.1...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -5700,7 +5700,7 @@ jQuery(async () => {
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
 
-        console.log(`[${MODULE_NAME}] v1.12.0 loaded`);
+        console.log(`[${MODULE_NAME}] v1.14.1 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
