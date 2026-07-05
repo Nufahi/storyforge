@@ -200,10 +200,12 @@ const REMINDER_ROLES = { system: 0, user: 1, assistant: 2 };
 const REMINDER_MODES = ['always', 'every', 'match'];
 const MAX_REMINDER_FIELD_LEN = 10000;
 const MAX_REMINDER_PATTERN_LEN = 300;
-// Cap a reminder's stored image. data: URLs (uploaded files) can be large, so
-// allow a generous-but-bounded budget; longer values are rejected to avoid
-// bloating settings storage.
-const MAX_REMINDER_IMAGE_LEN = 3_500_000; // ~2.5 MB once base64-decoded
+// Cap a reminder's image reference. Uploaded files are now pushed to ST's file
+// store and persisted as a short path (see uploadReminderImageToServer), so a
+// data: URL is only ever a transient preview value or an upload-failure
+// fallback. Keep the cap modest to bound the worst case where an old settings
+// blob still holds inline base64 — anything larger is rejected.
+const MAX_REMINDER_IMAGE_LEN = 1_500_000; // ~1.1 MB once base64-decoded
 
 // Validate / sanitize a reminder image reference. Accepts only safe sources:
 //   • data:image/...;base64,...  (uploaded file)
@@ -228,12 +230,21 @@ function sanitizeReminderImage(raw) {
 // Results are cached so we don't recompile every reply. ReDoS risk is low (we
 // run it against a single bounded message slice), but we still cap length.
 const reminderPatternCache = new Map(); // pattern string -> RegExp | null
+// Cap the cache: patterns are edited character-by-character, so every partial
+// value would otherwise be cached forever (unbounded growth). A small LRU-ish
+// bound keeps it tiny — evict the oldest entry once we exceed the limit.
+const REMINDER_PATTERN_CACHE_MAX = 100;
 function compileReminderPattern(pattern) {
     if (typeof pattern !== 'string' || !pattern.trim()) return null;
     const src = pattern.slice(0, MAX_REMINDER_PATTERN_LEN);
     if (reminderPatternCache.has(src)) return reminderPatternCache.get(src);
     let re = null;
     try { re = new RegExp(src, 'i'); } catch { re = null; }
+    if (reminderPatternCache.size >= REMINDER_PATTERN_CACHE_MAX) {
+        // Map preserves insertion order — the first key is the oldest.
+        const oldest = reminderPatternCache.keys().next().value;
+        reminderPatternCache.delete(oldest);
+    }
     reminderPatternCache.set(src, re);
     return re;
 }
@@ -403,6 +414,7 @@ const defaultSettings = Object.freeze({
     // either stays in context permanently ('always') or surfaces once every
     // N model replies ('every'). Counter only advances on bot replies.
     reminderFolders: null,      // [{ id, name, collapsed, reminders: [...] }]
+    remImagesMigrated: false,   // one-time flag: inline base64 images offloaded to file store
     qiBarVisible: true,
     sendBarButton: true,
     // ==== Director Mode ====
@@ -2540,10 +2552,11 @@ async function openStoryForgePopup() {
             refreshPromptsList();
         });
 
-        // Settings
-        $('#sf-pop-enabled').on('change', function () { getSettings().enabled = $(this).is(':checked'); saveSettings(); });
-        $('#sf-pop-depth').on('input', function () { getSettings().depth = parseInt($(this).val(), 10) || 1; saveSettings(); });
-        $('#sf-pop-autoclear').on('change', function () { getSettings().autoClear = $(this).is(':checked'); saveSettings(); });
+        // Settings. .off() first so a re-show can never stack a second handler
+        // on a surviving node (defensive — nodes are usually fresh here).
+        $('#sf-pop-enabled').off('change').on('change', function () { getSettings().enabled = $(this).is(':checked'); saveSettings(); });
+        $('#sf-pop-depth').off('input').on('input', function () { getSettings().depth = parseInt($(this).val(), 10) || 1; saveSettings(); });
+        $('#sf-pop-autoclear').off('change').on('change', function () { getSettings().autoClear = $(this).is(':checked'); saveSettings(); });
         $('#sf-pop-clearall').on('click', () => {
             clearAllTools();
             $('.storyforge-tool-btn').removeClass('storyforge-active');
@@ -2596,6 +2609,70 @@ function bindSections() {
     });
 }
 
+// Upload a data: URL image to SillyTavern's own file store and return a stable
+// relative path (e.g. "user/images/storyforge/1700000000.png"). This is the
+// key perf fix: instead of persisting multi-megabyte base64 blobs INSIDE
+// extensionSettings — which then get re-serialized and POSTed on every
+// debounced save and re-parsed on every ST boot — we keep only a short path.
+// The image bytes live on disk, out of the settings JSON entirely.
+//
+// Returns the server path on success, or null on any failure (caller falls
+// back to keeping the data URL so the feature still works, just heavier).
+async function uploadReminderImageToServer(dataUrl) {
+    try {
+        const m = /^data:image\/(png|jpe?g|webp|gif|avif);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl || '');
+        if (!m) return null;
+        let ext = m[1].toLowerCase();
+        if (ext === 'jpeg') ext = 'jpg';
+        const base64 = m[2].replace(/\s+/g, '');
+        const ctx = SillyTavern.getContext();
+        const headers = ctx.getRequestHeaders ? ctx.getRequestHeaders() : { 'Content-Type': 'application/json' };
+        const resp = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                image: base64,
+                format: ext,
+                ch_name: 'storyforge',
+                filename: `sf_rem_${Date.now()}`,
+            }),
+        });
+        if (!resp.ok) return null;
+        const out = await resp.json();
+        // Server returns a root-relative path; sanitize routes it through the
+        // same relative-path whitelist used for gallery URLs.
+        return out?.path ? sanitizeReminderImage(out.path) : null;
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] reminder image upload failed`, e);
+        return null;
+    }
+}
+
+// One-time migration: older versions stored uploaded reminder images as inline
+// base64 data: URLs inside extensionSettings. Those blobs bloat every settings
+// save/load. On boot, offload any surviving data: URL to ST's file store and
+// replace it with a path. Runs once (guarded by a settings flag), best-effort,
+// and never blocks startup — failures leave the data URL in place.
+async function migrateReminderImagesToServer() {
+    try {
+        const s = getSettings();
+        if (s.remImagesMigrated) return;
+        let changed = 0;
+        for (const { reminder } of getAllReminders()) {
+            const img = reminder.image;
+            if (typeof img === 'string' && img.startsWith('data:')) {
+                const path = await uploadReminderImageToServer(img);
+                if (path) { reminder.image = path; changed++; }
+            }
+        }
+        s.remImagesMigrated = true;
+        saveSettings();
+        if (changed) console.log(`[${MODULE_NAME}] migrated ${changed} inline reminder image(s) to file store`);
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] reminder image migration skipped`, e);
+    }
+}
+
 // Read a File as a data: URL (base64). Bounded so a huge image can't blow up
 // settings storage; oversized files are rejected with a toast.
 function readReminderImageFile(file) {
@@ -2604,8 +2681,10 @@ function readReminderImageFile(file) {
             toastr.warning(t('rem.img.notImage'), t('app'));
             return resolve(null);
         }
-        // Soft size guard before we even read (decoded base64 ~ 1.33x bytes).
-        if (file.size > 2.5 * 1024 * 1024) {
+        // Soft size guard before we even read (base64 inflates ~1.33x, and the
+        // transient data URL must still pass MAX_REMINDER_IMAGE_LEN before we
+        // upload it). ~1 MB source keeps the encoded value under the cap.
+        if (file.size > 1 * 1024 * 1024) {
             toastr.warning(t('rem.img.tooBig'), t('app'));
             return resolve(null);
         }
@@ -2681,11 +2760,20 @@ function openReminderImagePicker(remId) {
                 if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
             });
         }
-        $('#sf-rem-img-save').on('click', () => {
+        $('#sf-rem-img-save').on('click', async function () {
             const raw = $('#sf-rem-img-url').val()?.trim();
             // A typed URL wins over a stale preview if both diverge.
-            const finalVal = raw ? sanitizeReminderImage(raw) : pending;
+            let finalVal = raw ? sanitizeReminderImage(raw) : pending;
             if (raw && !finalVal) { toastr.warning(t('rem.img.badUrl'), t('app')); return; }
+            // An uploaded file arrives as a data: URL. Push it to ST's file
+            // store so we persist a tiny path instead of megabytes of base64.
+            // If the upload fails, fall back to keeping the data URL.
+            if (finalVal && finalVal.startsWith('data:')) {
+                const $btn = $(this).prop('disabled', true);
+                const uploaded = await uploadReminderImageToServer(finalVal);
+                $btn.prop('disabled', false);
+                if (uploaded) finalVal = uploaded;
+            }
             updateReminder(remId, { image: finalVal || '' });
             popup.complete(1);
             if ($('.storyforge-popup').length) $('#sf-body-reminders').html(buildRemindersHtml());
@@ -3033,10 +3121,10 @@ function refreshPopupContent() {
         refreshPopupContent();
     });
 
-    // Rebind settings
-    $('#sf-pop-enabled').on('change', function () { getSettings().enabled = $(this).is(':checked'); saveSettings(); });
-    $('#sf-pop-depth').on('input', function () { getSettings().depth = parseInt($(this).val(), 10) || 1; saveSettings(); });
-    $('#sf-pop-autoclear').on('change', function () { getSettings().autoClear = $(this).is(':checked'); saveSettings(); });
+    // Rebind settings (.off() guards against stacked handlers on re-render).
+    $('#sf-pop-enabled').off('change').on('change', function () { getSettings().enabled = $(this).is(':checked'); saveSettings(); });
+    $('#sf-pop-depth').off('input').on('input', function () { getSettings().depth = parseInt($(this).val(), 10) || 1; saveSettings(); });
+    $('#sf-pop-autoclear').off('change').on('change', function () { getSettings().autoClear = $(this).is(':checked'); saveSettings(); });
     $('#sf-pop-clearall').on('click', () => {
         clearAllTools();
         $('.storyforge-tool-btn').removeClass('storyforge-active');
@@ -4806,6 +4894,16 @@ function ccBindCardEvents() {
     });
 }
 
+// Classify the `type` argument ST passes with CHARACTER_MESSAGE_RENDERED.
+// A "fresh reply" is a brand-new bot turn — NOT a swipe (re-roll of the same
+// turn), a continue/append (extension of the current reply), an impersonate,
+// or the greeting rendered on chat open. Only fresh replies should trigger
+// extra hidden LLM work (e.g. plot-thread auto-detect).
+function ccIsFreshReplyType(type) {
+    const skip = ['first_message', 'swipe', 'continue', 'append', 'appendFinal', 'impersonate'];
+    return !skip.includes(type);
+}
+
 function ccBindStEvents() {
     const { eventSource, event_types } = SillyTavern.getContext();
 
@@ -4815,7 +4913,11 @@ function ccBindStEvents() {
     // Either way, any wrap left over from the *previous* reply must die when
     // a new reply arrives — otherwise stale cards stay attached to the
     // now-second-to-last message.
-    const onBotMessage = (msgId) => {
+    const onBotMessage = (msgId, type) => {
+        // Skip greeting/chat-open renders: no generation happened, so
+        // auto-generating choice cards here would fire a hidden LLM request
+        // just for opening a chat.
+        if (type === 'first_message') return;
         ccRemoveCards();
         const s = ccGetSettings();
         if (!s.ccEnabled || !s.ccAuto) return;
@@ -5619,7 +5721,7 @@ function ccRegisterSlashCommands() {
 // ==== Init ====
 
 jQuery(async () => {
-    console.log(`[${MODULE_NAME}] Loading v1.14.1...`);
+    console.log(`[${MODULE_NAME}] Loading v1.14.2...`);
     try {
         // Load translations before any UI is built so labels render in the
         // right language on first paint.
@@ -5659,15 +5761,29 @@ jQuery(async () => {
         // Advance every-N counters once per finished model reply. Use
         // CHARACTER_MESSAGE_RENDERED so only bot replies count (matches the
         // "every N model replies" semantics; user messages are ignored).
-        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
+        //
+        // ST fires this same event for several non-"fresh reply" cases we must
+        // NOT treat as a new turn, or we burn LLM calls / miscount cadence:
+        //   • 'first_message' — chat opened / greeting rendered (no generation)
+        //   • 'swipe'         — a re-roll of the SAME turn
+        //   • 'continue' / 'append*' — the reply was extended, not a new turn
+        // See ccIsFreshReplyType() for the classification.
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (_msgId, type) => {
+            // 'first_message' means no generation happened at all — a chat was
+            // just opened. Nothing here should run (no cadence tick, no LLM).
+            if (type === 'first_message') return;
             try { onBotReplyForReminders(); } catch (e) { console.error(`[${MODULE_NAME}] reminder sync`, e); }
             // Director Mode: consume the just-used event, tick cooldowns, maybe
             // roll a new one for the next reply.
             try { dmOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] director`, e); }
             // Plot Threads: tick the per-chat age clock + consume fired one-shots.
             try { ptOnBotReply(); } catch (e) { console.error(`[${MODULE_NAME}] plot threads`, e); }
-            // Plot Threads: optionally auto-detect new hooks from the chat.
-            try { ptOnBotReplyAutoDetect(); } catch (e) { console.error(`[${MODULE_NAME}] thread detect`, e); }
+            // Plot Threads: optionally auto-detect new hooks. Only on a truly
+            // fresh reply — never on a swipe (re-roll of the same turn) or a
+            // continue, both of which would fire an extra hidden LLM request.
+            if (ccIsFreshReplyType(type)) {
+                try { ptOnBotReplyAutoDetect(); } catch (e) { console.error(`[${MODULE_NAME}] thread detect`, e); }
+            }
         });
         // New chat = fresh cycle: reset counters and disarm every-N reminders.
         eventSource.on(event_types.CHAT_CHANGED, () => {
@@ -5699,8 +5815,11 @@ jQuery(async () => {
         } catch { /* event not present on this build */ }
         // Prime 'always' reminders on load.
         try { syncReminderInjections(false); } catch (e) { console.error(`[${MODULE_NAME}] reminder init`, e); }
+        // Offload any legacy inline base64 reminder images to the file store so
+        // they stop bloating every settings save/load. Fire-and-forget.
+        migrateReminderImagesToServer();
 
-        console.log(`[${MODULE_NAME}] v1.14.1 loaded`);
+        console.log(`[${MODULE_NAME}] v1.14.2 loaded`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] \u274C Failed`, err);
     }
