@@ -140,18 +140,42 @@ function clickQuickInsert(button) {
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+let quickInsertBar;
+let observedSendForm;
+const quickInsertObserver = new MutationObserver(() => mountQuickInsertBar());
+
+function mountQuickInsertBar() {
+    const form = document.getElementById('send_form');
+    if (!form) return;
+    if (observedSendForm !== form) {
+        quickInsertObserver.disconnect();
+        quickInsertObserver.observe(form, { childList: true, subtree: true });
+        observedSendForm = form;
+    }
+    const qr = form.querySelector('#qr--bar');
+    qr?.classList.toggle('sf-qi-host', Boolean(quickInsertBar));
+    if (!quickInsertBar) return;
+    // Use the real QR container so theme focus/hover/height rules apply naturally.
+    // QR recreates it on settings/chat changes; retain and reattach our own row.
+    const host = qr || form;
+    if (quickInsertBar.parentElement !== host) host.prepend(quickInsertBar);
+}
+
 function renderQuickInsertBar() {
-    $('#sf-qi-bar').remove();
+    quickInsertBar?.remove();
+    quickInsertBar = null;
     const form = document.getElementById('send_form');
     const items = getQuickInserts().filter(item => item.enabled);
-    if (!form || !getSettings().qiBarVisible || !items.length) return;
+    if (!form || !getSettings().qiBarVisible || !items.length) {
+        mountQuickInsertBar();
+        return;
+    }
 
     const bar = $(`<div id="sf-qi-bar" class="sf-qi-bar" role="group" aria-label="${escapeHtml(t('qi.section.title'))}">
         ${items.map(item => `<button type="button" class="sf-qi-btn menu_button interactable" data-qi-id="${escapeHtml(item.id)}" title="${escapeHtml(item.description || item.name)}">${escapeHtml(item.name)}</button>`).join('')}
     </div>`);
-    // A sibling in normal flow: no changes to the form, textarea, Quick Replies
-    // or their theme-owned flex/grid layout, dimensions and positioning.
-    form.before(bar[0]);
+    quickInsertBar = bar[0];
+    mountQuickInsertBar();
     bar.on('mousedown', '.sf-qi-btn', event => event.preventDefault());
     bar.on('click', '.sf-qi-btn', function (event) {
         event.preventDefault();

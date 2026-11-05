@@ -1,6 +1,8 @@
 /* Composer buttons inherit the host theme; no send_form / textarea overrides. */
+/* Keep inserts on their own row inside the theme-controlled QR container. */
+#qr--bar.sf-qi-host { flex-wrap: wrap; }
 .sf-qi-bar {
-    display: flex; flex: 0 0 auto; flex-flow: row wrap; align-items: center; justify-content: center;
+    display: flex; flex: 0 0 100%; width: 100%; order: 0; flex-flow: row wrap; align-items: center; justify-content: center;
     align-self: stretch; grid-column: 1 / -1; min-width: 0; box-sizing: border-box;
     gap: var(--sf-qi-gap, .25em); padding: var(--sf-qi-padding, .25em 0);
     color: var(--SmartThemeBodyColor, inherit);

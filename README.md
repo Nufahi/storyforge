@@ -36,9 +36,9 @@ https://github.com/Nufahi/storyforge
 
 ## Совместимость с темами
 
-Панель находится **перед `#send_form`, отдельным соседним элементом**. Расширение не меняет внутреннюю структуру формы отправки, стили поля ввода или Quick Replies. Кнопки используют стандартный класс SillyTavern `menu_button`, цвета берутся из текущей темы. В CSS нет `!important`, фиксированных координат, своих слоёв размытия и глобальных переопределений.
+Панель находится **отдельным рядом внутри `#qr--bar`**. Поэтому темы вроде Crème Brûlée · Magenta, скрывающие QR-панель и раскрывающие её через `#send_form:focus-within`, управляют и вставками StoryForge. При пересоздании QR-панели вставки автоматически возвращаются в неё. Если встроенная QR-панель отключена или вынесена в отдельное окно, вставки располагаются внутри формы над полем сообщения.
 
-Для настройки отступов доступны `--sf-qi-gap` и `--sf-qi-padding` на `.sf-qi-bar`. У тем, которые полностью переставляют форму отправки или фиксируют её на экране, может потребоваться настройка положения самой `.sf-qi-bar`.
+Кнопки используют стандартный класс SillyTavern `menu_button`, цвета берутся из текущей темы. Расширение добавляет перенос рядов контейнеру QR, сохраняя его правила скрытия, высоту и оформление. Для настройки отступов доступны `--sf-qi-gap` и `--sf-qi-padding` на `.sf-qi-bar`.
 
 ## Совместимость сохранённых настроек
 
@@ -50,7 +50,7 @@ https://github.com/Nufahi/storyforge
 
 StoryForge combines narrative prompts, reminder folders and Quick Inserts in one menu. Existing prompts and reminders are restored automatically from saved settings. Open StoryForge from Extensions, the extension menu, or `/storyforge`.
 
-Insert buttons are centered in horizontal wrapping rows with full labels. They always target `#send_textarea`. The toolbar is a sibling of `#send_form` and uses native `menu_button` styling. Only Plot Threads, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
+Insert buttons are centered in horizontal wrapping rows with full labels. They always target `#send_textarea`. The toolbar sits inside the native QR bar, following the theme's collapse/expand rules, and falls back to the send form when QR is disabled or popped out. It uses native `menu_button` styling. Only Plot Threads, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
 
 ## Проверка
 
@@ -61,6 +61,8 @@ python3 -m pip install playwright
 python3 -m playwright install chromium
 python3 tests/browser_smoke.py
 ```
+
+Дополнительно проверяются скрытие QR-панели, раскрытие по тапу, клавиатура и пересоздание панели. Для проверки полного CSS своей темы передай путь к JSON: `ST_THEME_PATH="путь/тема.json" python3 tests/browser_smoke.py`.
 
 Тесту нужен интернет для загрузки компонентов SillyTavern. Путь к уже установленному Chromium можно задать переменной `CHROMIUM_PATH`.
 

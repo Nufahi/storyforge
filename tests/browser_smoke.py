@@ -28,6 +28,7 @@ assets = {
     '/jquery.js': fetch('lib/jquery-3.5.1.min.js'),
     '/jquery-ui.js': fetch('lib/jquery-ui.min.js'),
     '/host.css': fetch('style.css'),
+    '/qr.css': fetch('scripts/extensions/quick-reply/style.css'),
 }
 popup = fetch('scripts/popup.js')
 popup = re.sub(r'^import .*?;\s*', '', popup, flags=re.M)
@@ -43,16 +44,20 @@ const uuidv4 = () => crypto.randomUUID();
 template = re.search(r'<template id="popup_template"[\s\S]*?</template>', fetch('index.html')).group()
 fixture = '''<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/host.css"><link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/host.css"><link rel="stylesheet" href="/qr.css"><link rel="stylesheet" href="/style.css">
 <style>
 body {margin:0; padding:0; height:100vh; overflow:auto; font-family:Arial;}
 #fixture {display:flex; flex-direction:column; width:100%; min-width:0;}
-#send_form {position:static; display:flex; border-radius:25px; padding:8px;}
+#form_sheld {position:relative;}
+#send_form {border-radius:25px; padding:8px;}
 #send_textarea {min-width:0; flex:1;}
 </style></head><body>''' + template + '''
 <main id="fixture"><div id="extensionsMenu"></div><div id="extensions_settings2"></div>
 <input id="other" value="menu text"><textarea id="message-editor">message text</textarea>
-<form id="send_form"><div id="qr--bar">Quick Replies</div><textarea id="send_textarea"></textarea><button id="send_but">Send</button></form></main>
+<div id="form_sheld"><form id="send_form">
+<div id="qr--bar" class="flex-container flexGap5"><div class="qr--buttons"><button type="button" class="qr--button">Quick Reply</button></div></div>
+<div id="nonQRFormItems"><textarea id="send_textarea" placeholder="Message"></textarea><button type="button" id="send_but">Send</button></div>
+</form></div></main>
 <script src="/jquery.js"></script><script src="/jquery-ui.js"></script>
 <script type="module">
 import { Popup, POPUP_TYPE } from '/popup.js';
@@ -104,7 +109,7 @@ try:
             'sf-secretreveal', 'sf-sceneshift', 'sf-timeskip', 'sf-raisestakes'}
         assert page.locator('#storyforge_menu_btn').inner_text().strip() == 'StoryForge'
         assert page.locator('#sf-qi-panel .inline-drawer-header b').inner_text() == 'StoryForge'
-        assert page.locator('#sf-qi-bar + #send_form').count() == 1
+        assert page.locator('#qr--bar > #sf-qi-bar').count() == 1
         assert page.locator('#send_form > #qr--bar').count() == 1
         page.evaluate('events.ready(); events.ready(); events.chat()')
         assert page.locator('#sf-qi-bar').count() == 1
@@ -270,8 +275,92 @@ try:
             return buttons[0].getBoundingClientRect().top === buttons[1].getBoundingClientRect().top
                 && buttons.every(b => b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1);
         }''')
+        # QR themes collapse the actual container, including StoryForge's row.
+        # Optionally apply the entire user-supplied JSON, not just its sendbar rules.
+        theme_path = os.environ.get('ST_THEME_PATH')
+        theme_css = json.loads(Path(theme_path).read_text())['custom_css'] if theme_path else '''
+            #form_sheld {position:absolute; bottom:10px;}
+            #send_form {position:relative; flex-direction:column; gap:10px; width:98%; padding:0 10px 10px;}
+            #qr--bar {height:0;}
+            #send_form:focus-within #qr--bar {height:auto;}
+        '''
+        # Avoid remote fonts/images affecting deterministic layout or leaking fixture requests.
+        page.route(re.compile(r'^https?://(?!127\.0\.0\.1)'), lambda route: route.abort())
+        theme_style = page.evaluate_handle('''css => {
+            const style = document.createElement('style');
+            style.textContent = css;
+            document.head.append(style);
+            return style;
+        }''', theme_css)
+        page.evaluate('''() => {
+            window.qrButton = document.querySelector('.qr--button');
+            window.qrClicks = 0;
+            qrButton.addEventListener('click', () => qrClicks++);
+        }''')
+        for width in [320, 390, 768, 1280]:
+            page.set_viewport_size({'width': width, 'height': 844})
+            page.locator('#other').focus()
+            page.wait_for_function('document.querySelector("#qr--bar").getBoundingClientRect().height < 1')
+            # No insert button is hit-testable outside the collapsed QR viewport.
+            assert page.locator('.sf-qi-btn').first.evaluate('''button => {
+                const r = button.getBoundingClientRect();
+                return !button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+            }'''), page.locator('#sf-qi-bar').evaluate('''bar => ({
+                bar: bar.getBoundingClientRect().toJSON(), host: bar.parentElement.getBoundingClientRect().toJSON(),
+                buttons: [...bar.children].map(b => ({label: b.textContent, rect: b.getBoundingClientRect().toJSON(),
+                    sw: b.scrollWidth, cw: b.clientWidth, sh: b.scrollHeight, ch: b.clientHeight}))
+            })''')
+            page.locator('#send_textarea').tap()
+            page.wait_for_function('document.querySelector("#qr--bar").getBoundingClientRect().height > 1')
+            page.wait_for_timeout(300)  # Theme animates button widths/padding on viewport changes.
+            assert page.locator('#sf-qi-bar').evaluate('''bar => {
+                const r = bar.getBoundingClientRect(), host = bar.parentElement.getBoundingClientRect();
+                const buttons = [...bar.children];
+                return r.left >= host.left - 1 && r.right <= host.right + 1
+                    && r.top >= host.top - 1 && r.bottom <= host.bottom + 1
+                    && buttons[0].getBoundingClientRect().top === buttons[1].getBoundingClientRect().top
+                    && buttons.every(b => b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1);
+            }'''), page.locator('#sf-qi-bar').evaluate('''bar => ({
+                bar: bar.getBoundingClientRect().toJSON(), host: bar.parentElement.getBoundingClientRect().toJSON(),
+                buttons: [...bar.children].map(b => ({label: b.textContent, rect: b.getBoundingClientRect().toJSON(),
+                    sw: b.scrollWidth, cw: b.clientWidth, sh: b.scrollHeight, ch: b.clientHeight}))
+            })''')
+            page.locator('#send_textarea').fill('draft')
+            page.locator('#send_textarea').evaluate('el => el.setSelectionRange(5,5)')
+            page.locator('.sf-qi-btn').first.tap()
+            assert page.locator('#send_textarea').input_value() != 'draft'
+            assert page.locator('#send_textarea').evaluate('el => el === document.activeElement')
+        page.locator('.qr--button').click()
+        assert page.evaluate('qrClicks') == 1
+        # Keyboard focus remains inside the form while choosing an insert.
+        page.locator('.sf-qi-btn').first.focus()
+        assert page.locator('#qr--bar').evaluate('el => el.getBoundingClientRect().height > 1')
+        page.keyboard.press('Enter')
+        assert page.locator('#send_textarea').evaluate('el => el === document.activeElement')
+        # Refresh / disable / popout / re-enable QR without losing buttons or listeners.
+        page.evaluate('''() => {
+            window.oldQr = document.querySelector('#qr--bar');
+            const replacement = oldQr.cloneNode(false);
+            replacement.append(qrButton.parentElement);
+            oldQr.replaceWith(replacement);
+        }''')
+        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        assert page.locator('#sf-qi-bar').count() == 1
+        assert page.locator('#qr--bar .qr--button').evaluate('el => el === qrButton')
+        page.evaluate('document.querySelector("#qr--bar").remove()')
+        page.wait_for_selector('#send_form > #sf-qi-bar')
+        page.evaluate('document.querySelector("#send_form").prepend(oldQr)')
+        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        page.evaluate('ctx.extensionSettings.storyforge.qiBarVisible = false; events.chat()')
+        assert page.locator('#sf-qi-bar').count() == 0
+        assert page.locator('#qr--bar.sf-qi-host').count() == 0
+        page.evaluate('ctx.extensionSettings.storyforge.qiBarVisible = true; events.chat()')
+        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        theme_style.evaluate('el => el.remove()')
+        page.locator('#other').focus()
+        assert page.locator('#qr--bar').evaluate('el => el.getBoundingClientRect().height > 1')
         assert not errors, errors
         browser.close()
-        print('PASS: composer targeting, full centered labels, CRUD, import/export, saved prompts, injections, reminders, chat switching, native Popup and responsive layout')
+        print('PASS: composer targeting, full centered labels, CRUD, import/export, saved prompts, injections, reminders, chat switching, native Popup, responsive layout, QR theme collapse/touch/keyboard and remounting')
 finally:
     server.shutdown()
