@@ -57,10 +57,13 @@ body {margin:0; padding:0; height:100vh; overflow:auto; font-family:Arial;}
 <script type="module">
 import { Popup, POPUP_TYPE } from '/popup.js';
 window.toastr = {options: {}, success() {}, warning() {}, error() {}};
-window.events = {}; window.commands = []; window.inputs = 0;
+window.events = {}; window.commands = []; window.inputs = 0; window.injections = {};
 window.ctx = {locale:'ru', extensionSettings: JSON.parse(localStorage.getItem('settings') || '{}'),
-    Popup, POPUP_TYPE, eventTypes: {APP_READY:'ready', CHAT_CHANGED:'chat'},
-    eventSource: {on: (name, fn) => events[name] = fn},
+    Popup, POPUP_TYPE, eventTypes: {APP_READY:'ready', CHAT_CHANGED:'chat', GENERATION_STARTED:'start',
+        GENERATION_ENDED:'end', GENERATION_STOPPED:'stop', CHARACTER_MESSAGE_RENDERED:'reply'},
+    eventSource: {on: (name, fn) => { const previous = events[name]; events[name] = (...args) => { previous?.(...args); fn(...args); }; }},
+    setExtensionPrompt: (id, text, position, depth, scan, role) => injections[id] = {text, position, depth, scan, role},
+    chat: [], chatId:'chat-a', chatMetadata:{}, saveMetadataDebounced() {},
     saveSettingsDebounced: () => localStorage.setItem('settings', JSON.stringify(ctx.extensionSettings)),
     SlashCommand: {fromProps: x => x}, SlashCommandParser: {addCommandObject: x => commands.push(x)}};
 window.SillyTavern = {getContext: () => ctx};
@@ -96,7 +99,11 @@ try:
         page.goto(f'http://127.0.0.1:{server.server_port}/')
         page.wait_for_selector('.sf-qi-btn')
         assert page.locator('.sf-qi-btn').count() == 6
-        assert page.evaluate('commands.map(c => c.name)') == ['storyforge']
+        assert set(page.evaluate('commands.map(c => c.name)')) == {
+            'storyforge', 'sf-clear', 'sf-plottwist', 'sf-newnpc', 'sf-npcaction', 'sf-randomevent',
+            'sf-secretreveal', 'sf-sceneshift', 'sf-timeskip', 'sf-raisestakes'}
+        assert page.locator('#storyforge_menu_btn').inner_text().strip() == 'StoryForge'
+        assert page.locator('#sf-qi-panel .inline-drawer-header b').inner_text() == 'StoryForge'
         assert page.locator('#sf-qi-bar + #send_form').count() == 1
         assert page.locator('#send_form > #qr--bar').count() == 1
         page.evaluate('events.ready(); events.ready(); events.chat()')
@@ -121,6 +128,14 @@ try:
         page.locator('#storyforge_menu_btn').click()
         page.wait_for_selector('.sf-qi-manager-dialog[open]')
         manager = page.locator('.sf-qi-manager')
+        assert manager.locator('[role="tab"]').count() == 3
+        assert manager.locator('[data-tool-id]').count() == 8
+        manager.locator('[data-tool-id="plot_twist"]').click()
+        assert page.evaluate('injections.storyforge_plot_twist.text').startswith('[StoryForge: Plot Twist]')
+        assert manager.locator('[data-tool-id="plot_twist"]').get_attribute('aria-pressed') == 'true'
+        page.evaluate('events.end()')
+        assert page.evaluate('injections.storyforge_plot_twist.text') == ''
+        manager.locator('#sf-tab-inserts').click()
         assert manager.locator('.sf-qi-settings-row').count() == 6
         manager.locator('.sf-qi-toggle').first.uncheck()
         assert page.locator('.sf-qi-btn').count() == 5
@@ -129,7 +144,8 @@ try:
         assert page.evaluate('ctx.extensionSettings.storyforge.quickInserts[1].id') == 'qi_action'
         manager.locator('[data-action="add"]').click()
         editor = page.locator('.sf-qi-editor')
-        editor.locator('[name="name"]').fill('<Test>')
+        long_name = '<Test> Длинное название макроса полностью'
+        editor.locator('[name="name"]').fill(long_name)
         editor.locator('[name="content"]').fill('abc\nxyz')
         editor.locator('[name="insertPosition"]').select_option('prepend')
         editor.locator('[name="cursorType"]').select_option('custom')
@@ -149,6 +165,15 @@ try:
             page.set_viewport_size({'width': width, 'height': 844})
             assert page.locator('.sf-qi-manager-dialog').evaluate('(el) => el.scrollWidth <= el.clientWidth + 1'), width
             assert manager.evaluate('(el) => el.scrollWidth <= el.clientWidth + 1'), width
+            # The bar must be rows, centered, with labels fully visible, even
+            # when generic theme buttons have full width / clipping styles.
+            assert page.locator('#sf-qi-bar').evaluate('''bar => {
+                const style = getComputedStyle(bar);
+                const buttons = [...bar.children];
+                return style.flexDirection === 'row' && style.justifyContent === 'center'
+                    && buttons[0].getBoundingClientRect().top === buttons[1].getBoundingClientRect().top
+                    && buttons.every(b => b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1);
+            }'''), width
         page.evaluate('document.documentElement.style.zoom = "2"')
         assert manager.evaluate('(el) => el.scrollWidth <= el.clientWidth + 1')
         page.evaluate('document.documentElement.style.zoom = "1"')
@@ -162,6 +187,7 @@ try:
         with page.expect_file_chooser() as chosen:
             manager.locator('[data-action="import"]').click()
         chosen.value.set_files({'name': 'inserts.json', 'mimeType': 'application/json', 'buffer': exported})
+        page.wait_for_function('document.querySelectorAll("dialog[open]").length === 2')
         page.locator('dialog').last.locator('.popup-button-ok').click()
         page.wait_for_function('document.querySelectorAll("dialog").length === 1')
         manager.locator('.sf-qi-visible').uncheck()
@@ -177,8 +203,75 @@ try:
         page.reload()
         page.wait_for_selector('.sf-qi-btn')
         assert page.locator('.sf-qi-btn').count() == 7
+        # Saved 1.x prompts and reminders must survive the simplified release.
+        page.evaluate('''() => {
+            const s = ctx.extensionSettings.storyforge;
+            s.tools = [{id:'saved-tool', label:'Мой промпт', prompt:'Keep my saved prompt.', promptCollapsed:false}];
+            s.reminderFolders = [{id:'saved-folder', name:'Мои напоминания', collapsed:false, reminders:[
+                {id:'always', label:'Всегда', prompt:'Stay consistent.', enabled:true, mode:'always', depth:2, role:'system', collapsed:false},
+                {id:'every', label:'Каждые два', prompt:'Every two.', enabled:true, mode:'every', interval:2, role:'user'},
+                {id:'match', label:'По слову', prompt:'Keyword reminder.', enabled:true, mode:'match', pattern:'dragon', role:'assistant'},
+                {id:'local', label:'Этот чат', prompt:'Only A.', enabled:true, mode:'always', chatOnly:true, homeChatId:'chat-a'},
+                {id:'foreign', label:'Другой чат', prompt:'Only B.', enabled:true, mode:'always', chatOnly:true, homeChatId:'chat-b'}
+            ]}];
+            ctx.saveSettingsDebounced();
+        }''')
+        page.reload()
+        page.wait_for_selector('.sf-qi-btn')
+        page.locator('#storyforge_menu_btn').click()
+        page.wait_for_selector('.sf-qi-manager-dialog[open]')
+        assert manager.locator('[data-tool-id]').count() == 1
+        assert manager.locator('[data-tool-id]').inner_text() == 'Мой промпт'
+        manager.locator('[data-tool-id]').click()
+        assert page.evaluate('injections["storyforge_saved-tool"].text') == 'Keep my saved prompt.'
+        assert page.evaluate('injections.storyforge_rem_always.depth') == 2
+        assert page.evaluate('injections.storyforge_rem_local.text') == 'Only A.'
+        assert page.evaluate('injections.storyforge_rem_foreign?.text || ""') == ''
+        manager.locator('.sf-prompts > details').first.locator('> summary').click()
+        manager.locator('[data-tool-index="0"] [name="prompt"]').fill('Edited saved prompt.')
+        assert page.evaluate('injections["storyforge_saved-tool"].text') == 'Edited saved prompt.'
+        manager.locator('[data-prompt-action="add"]').click()
+        assert manager.locator('[data-tool-id]').count() == 2
+        manager.locator('[data-tool-index="1"] [name="label"]').fill('Second prompt')
+        manager.locator('[data-tool-index="1"] [name="prompt"]').fill('Second instruction.')
+        manager.locator('[data-tool-index="1"] [data-prompt-action="up"]').click()
+        assert manager.locator('[data-tool-id]').first.inner_text() == 'Second prompt'
+        manager.locator('#sf-tab-reminders').click()
+        assert manager.locator('[data-reminder-index]').count() == 4
+        assert 'Мои напоминания' in manager.locator('.sf-reminders').inner_text()
+        page.evaluate('events.reply(0,"first_message"); events.reply(0,"swipe"); events.reply(0,"continue");')
+        assert page.evaluate('injections.storyforge_rem_every?.text || ""') == ''
+        page.evaluate('events.reply(1); events.reply(2);')
+        assert page.evaluate('injections.storyforge_rem_every.text') == 'Every two.'
+        assert page.evaluate('injections.storyforge_rem_every.role') == 1
+        page.evaluate('ctx.chat = [{is_user:true, mes:"dragon"}]; events.start();')
+        assert page.evaluate('injections.storyforge_rem_match.text') == 'Keyword reminder.'
+        assert page.evaluate('injections.storyforge_rem_match.role') == 2
+        page.evaluate('events.reply(3)')
+        assert page.evaluate('injections.storyforge_rem_every.text') == ''
+        page.evaluate('ctx.chatId="chat-b"; ctx.chatMetadata={}; events.chat();')
+        assert page.evaluate('injections.storyforge_rem_local.text') == ''
+        assert page.evaluate('injections.storyforge_rem_foreign.text') == 'Only B.'
+        assert page.evaluate('injections["storyforge_saved-tool"].text') == ''
+        assert 'Другой чат' in manager.locator('.sf-reminders').inner_text()
+        assert 'Этот чат' not in manager.locator('.sf-reminders').inner_text()
+        for width in [320, 390, 768, 1280]:
+            page.set_viewport_size({'width': width, 'height': 844})
+            assert manager.evaluate('(el) => el.scrollWidth <= el.clientWidth + 1'), width
+        manager.locator('#sf-tab-prompts').click()
+        manager.locator('.sf-prompts > details').last.locator('> summary').click()
+        manager.locator('.sf-prompt-options [name="enabled"]').uncheck()
+        assert page.evaluate('Object.values(injections).every(item => !item.text)')
+        # A theme's generic fixed-size buttons must not turn inserts into a column.
+        manager.locator('.sf-qi-close').click()
+        page.add_style_tag(content='.menu_button { width:100%; height:24px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }')
+        assert page.locator('#sf-qi-bar').evaluate('''bar => {
+            const buttons = [...bar.children];
+            return buttons[0].getBoundingClientRect().top === buttons[1].getBoundingClientRect().top
+                && buttons.every(b => b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1);
+        }''')
         assert not errors, errors
         browser.close()
-        print('PASS: composer targeting, selection/cursor, line modes, CRUD, import/export, persistence, native Popup and responsive layout')
+        print('PASS: composer targeting, full centered labels, CRUD, import/export, saved prompts, injections, reminders, chat switching, native Popup and responsive layout')
 finally:
     server.shutdown()

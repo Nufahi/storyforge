@@ -1,9 +1,13 @@
-# StoryForge — Quick Inserts
+# StoryForge
 
-Лёгкие настраиваемые вставки текста для SillyTavern. Панель кнопок перед формой отправки: действия, кавычки, OOC и собственные шаблоны.
+Промпты для управления сценой, папки напоминаний и настраиваемые вставки текста для SillyTavern.
 
 ## Возможности
 
+- Готовые сюжетные промпты: Plot Twist, New NPC, NPC Action, Random Event, Secret Reveal, Scene Shift, Time Skip, Raise Stakes. Свои промпты, редактирование и сортировка.
+- Добавление выбранных промптов в контекст, настройка глубины и автоматическое снятие выбора после ответа.
+- Папки напоминаний: постоянно, каждые N ответов или по ключевым словам; роли, привязка к чату и изображения.
+- Кнопки вставок горизонтально по центру, с полными названиями и переносом ряда при нехватке места.
 - Вставка **только в поле сообщения `#send_textarea`**, даже после работы в настройках, другом меню или редакторе сообщения.
 - Вставка на курсоре с заменой выделения, в начале/конце текущей строки или с новой строки.
 - Настройка положения курсора внутри вставленного текста.
@@ -24,7 +28,9 @@ https://github.com/Nufahi/storyforge
 
 ## Настройка
 
-Открой **Расширения → StoryForge — Быстрые вставки**, пункт StoryForge в меню расширений рядом с вводом или команду `/storyforge`.
+Открой **Расширения → StoryForge**, пункт **StoryForge** в меню расширений рядом с вводом или команду `/storyforge`. Внутри — вкладки **Промпты**, **Напоминания**, **Быстрые вставки**.
+
+На вкладке промптов нажми кнопку, чтобы добавить инструкцию в контекст следующего ответа. Повторное нажатие снимает выбор. Редактор и настройки находятся ниже. Команды `/sf-plottwist`, `/sf-newnpc`, `/sf-npcaction`, `/sf-randomevent`, `/sf-secretreveal`, `/sf-sceneshift`, `/sf-timeskip`, `/sf-raisestakes` переключают соответствующий промпт, `/sf-clear` снимает весь выбор.
 
 У каждой вставки есть имя кнопки, описание, текст, позиция вставки и положение курсора. Панель можно скрыть целиком; сохранённые вставки при этом остаются. Импорт заменяет текущий список после подтверждения, поэтому перед ним можно экспортировать свой набор.
 
@@ -34,21 +40,21 @@ https://github.com/Nufahi/storyforge
 
 Для настройки отступов доступны `--sf-qi-gap` и `--sf-qi-padding` на `.sf-qi-bar`. У тем, которые полностью переставляют форму отправки или фиксируют её на экране, может потребоваться настройка положения самой `.sf-qi-bar`.
 
-## Переход с 1.x
+## Совместимость сохранённых настроек
 
-В 2.0 оставлены только быстрые вставки. Удалены сюжетные инструменты и нити, режим режиссёра, карточки выбора, напоминания и связанные с ними команды, генерации и инъекции промптов. Кнопка старого сюжетного меню внутри сендбара также убрана; настройки доступны указанными выше способами.
+Существующие промпты, папки напоминаний и быстрые вставки снова доступны в общем меню. Их данные, порядок и настройки используются в прежнем формате. Данные, сохранённые до обновления 2.0.0, не требуют повторного импорта.
 
-Существующие быстрые вставки, их порядок и видимость сохраняются. Старые настройки остальных функций остаются неактивными в сохранённых данных, но больше не используются. Данные чатов не изменяются.
+Удалены только сюжетные нити, режим режиссёра и карточки выбора с их автоматическими генерациями. Их старые данные остаются неактивными.
 
 ## English
 
-StoryForge 2.0 keeps only Quick Inserts: configurable text buttons placed before the send form. Inserts always target `#send_textarea`, never the last focused settings field or message editor. Configure multiline snippets, line/cursor placement, ordering and visibility in Extensions, the extension menu, or `/storyforge`. Existing snippets and JSON exports remain compatible.
+StoryForge combines narrative prompts, reminder folders and Quick Inserts in one menu. Existing prompts and reminders are restored automatically from saved settings. Open StoryForge from Extensions, the extension menu, or `/storyforge`.
 
-The toolbar is a sibling of `#send_form`, uses native `menu_button` styling and does not override the composer layout. Narrative tools, reminders, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
+Insert buttons are centered in horizontal wrapping rows with full labels. They always target `#send_textarea`. The toolbar is a sibling of `#send_form` and uses native `menu_button` styling. Only Plot Threads, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
 
 ## Проверка
 
-`tests/browser_smoke.py` проверяет вставку после фокуса в другом поле, выделение и курсор, редактор, сортировку стрелками, импорт/экспорт, сохранение и отсутствие горизонтального переполнения на ширинах 320–1280 px. Используются Chromium, настоящие jQuery / Popup / CSS из SillyTavern и подставной контекст приложения.
+`tests/browser_smoke.py` проверяет вставку после фокуса в другом поле, выделение и курсор, редактор, сортировку, импорт/экспорт, восстановление сохранённых промптов, инъекции, режимы напоминаний и переключение чатов. Проверяются полные названия кнопок, центрирование и отсутствие горизонтального переполнения на ширинах 320–1280 px. Используются Chromium, настоящие jQuery / Popup / CSS из SillyTavern и подставной контекст приложения.
 
 ```sh
 python3 -m pip install playwright

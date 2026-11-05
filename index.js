@@ -1,3 +1,5 @@
+import { createPromptManager } from './prompts.js';
+
 const MODULE_NAME = 'storyforge';
 const VALID_INSERT_POSITIONS = ['prepend', 'as_is', 'append', 'newline'];
 const MAX_QI_FIELD_LEN = 10000;
@@ -13,6 +15,7 @@ const DEFAULT_QUICK_INSERTS = [
 let strings = {};
 let fallbackStrings = {};
 let settingsPopup = null;
+const promptManager = createPromptManager({ getSettings, saveSettings, t, escapeHtml, icon });
 
 async function loadTranslations() {
     const ctx = SillyTavern.getContext();
@@ -75,8 +78,7 @@ function positionLabel(position) {
 function getSettings() {
     const { extensionSettings } = SillyTavern.getContext();
     const settings = extensionSettings[MODULE_NAME] ??= {};
-    // Keep existing inserts (including an intentionally empty list) and leave
-    // legacy data dormant so updating never destroys a user's saved work.
+    // Keep existing inserts, including an intentionally empty list.
     if (!Array.isArray(settings.quickInserts)) settings.quickInserts = structuredClone(DEFAULT_QUICK_INSERTS);
     if (typeof settings.qiBarVisible !== 'boolean') settings.qiBarVisible = true;
     return settings;
@@ -387,9 +389,35 @@ function buildSettings() {
 async function openSettingsPopup() {
     if (settingsPopup) return;
     const { Popup, POPUP_TYPE } = SillyTavern.getContext();
-    const root = $('<div class="sf-qi-manager"></div>').append(panelHeader(t('app'), t('qi.manager.subtitle')), buildSettings());
+    const root = $('<div class="sf-qi-manager"></div>').append(panelHeader(t('app'), t('manager.subtitle')));
+    const tabs = $('<div class="sf-manager-tabs" role="tablist"></div>');
+    for (const [name, title, content] of [
+        ['prompts', 'prompts.title', promptManager.buildPrompts()],
+        ['reminders', 'reminders.title', promptManager.buildReminders()],
+        ['inserts', 'qi.manage', buildSettings()],
+    ]) {
+        const selected = name === 'prompts';
+        const tab = $(`<button type="button" class="sf-qi-control" id="sf-tab-${name}" role="tab" aria-controls="sf-page-${name}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}">${escapeHtml(t(title))}</button>`);
+        const panel = $(`<div id="sf-page-${name}" role="tabpanel" aria-labelledby="sf-tab-${name}"></div>`).prop('hidden', !selected).append(content);
+        tab.on('click', () => {
+            tabs.find('[role="tab"]').attr({ 'aria-selected': 'false', tabindex: '-1' });
+            tab.attr({ 'aria-selected': 'true', tabindex: '0' });
+            root.children('[role="tabpanel"]').prop('hidden', true);
+            panel.prop('hidden', false);
+        });
+        tabs.append(tab);
+        root.append(panel);
+    }
+    tabs.on('keydown', '[role="tab"]', function (event) {
+        const buttons = tabs.find('button');
+        const index = buttons.index(this);
+        const next = event.key === 'ArrowRight' ? (index + 1) % buttons.length : event.key === 'ArrowLeft' ? (index + buttons.length - 1) % buttons.length
+            : event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : -1;
+        if (next !== -1) { event.preventDefault(); buttons.eq(next).trigger('click').trigger('focus'); }
+    });
+    root.find('.sf-qi-header').after(tabs);
     settingsPopup = new Popup(root, POPUP_TYPE.TEXT, '', { okButton: false, allowVerticalScrolling: true });
-    stylePopup(settingsPopup, root, t('qi.section.title'));
+    stylePopup(settingsPopup, root, t('app'));
     settingsPopup.dlg.classList.add('sf-qi-manager-dialog');
     try { await settingsPopup.show(); } finally { settingsPopup = null; }
 }
@@ -398,11 +426,11 @@ function mountUI() {
     const settingsHost = $('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings');
     if (settingsHost.length && !$('#sf-qi-panel').length) {
         const panel = $(`<div id="sf-qi-panel"><div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header"><b>${escapeHtml(t('qi.section.title'))}</b>
+            <div class="inline-drawer-toggle inline-drawer-header"><b>${escapeHtml(t('app'))}</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
             <div class="inline-drawer-content"></div></div></div>`);
-        const launcher = $(`<div class="sf-qi-launcher"><p class="sf-qi-info">${escapeHtml(t('qi.section.intro'))}</p>
-            <button type="button" class="menu_button">${icon('sliders')} ${escapeHtml(t('qi.manage'))}</button></div>`);
+        const launcher = $(`<div class="sf-qi-launcher"><p class="sf-qi-info">${escapeHtml(t('manager.subtitle'))}</p>
+            <button type="button" class="menu_button">${icon('sliders')} ${escapeHtml(t('manager.open'))}</button></div>`);
         launcher.find('button').on('click', openSettingsPopup);
         panel.find('.inline-drawer-content').append(launcher);
         settingsHost.append(panel);
@@ -410,7 +438,7 @@ function mountUI() {
     const menu = $('#extensionsMenu');
     if (menu.length && !$('#storyforge_menu_btn').length) {
         const button = $(`<a href="#" class="list-group-item interactable" id="storyforge_menu_btn">
-            <i class="fa-solid fa-fw fa-wand-magic-sparkles" aria-hidden="true"></i> ${escapeHtml(t('qi.section.title'))}</a>`);
+            <i class="fa-solid fa-fw fa-wand-magic-sparkles" aria-hidden="true"></i> ${escapeHtml(t('app'))}</a>`);
         button.on('click', event => { event.preventDefault(); openSettingsPopup(); });
         menu.append(button);
     }
@@ -420,6 +448,7 @@ function mountUI() {
 jQuery(async () => {
     try {
         await loadTranslations();
+        promptManager.init();
         mountUI();
         const { eventSource, eventTypes, event_types: legacyEventTypes, SlashCommandParser, SlashCommand } = SillyTavern.getContext();
         const event_types = eventTypes || legacyEventTypes;
@@ -427,10 +456,10 @@ jQuery(async () => {
         if (event_types?.CHAT_CHANGED) eventSource.on(event_types.CHAT_CHANGED, renderQuickInsertBar);
         if (SlashCommandParser && SlashCommand) {
             SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-                name: 'storyforge', callback: () => { openSettingsPopup(); return ''; }, helpString: t('qi.slashHelp'),
+                name: 'storyforge', callback: () => { openSettingsPopup(); return ''; }, helpString: t('manager.open'),
             }));
         }
-        console.log(`[${MODULE_NAME}] Quick Inserts loaded`);
+        console.log(`[${MODULE_NAME}] Loaded`);
     } catch (error) {
         console.error(`[${MODULE_NAME}] Failed to load`, error);
     }
