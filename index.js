@@ -108,10 +108,17 @@ function validateQuickInsert(raw) {
     };
 }
 
+const insertTargetSelector = '#send_textarea, #chat .mes textarea.edit_textarea, #chat .mes textarea.reasoning_edit_textarea';
+let lastInsertTarget;
+document.addEventListener('focusin', event => {
+    if (event.target.matches?.(insertTargetSelector)) lastInsertTarget = event.target;
+    syncQuickInsertVisibility();
+});
+
 function clickQuickInsert(button) {
-    // Resolve the composer at click time. Never use activeElement or remember
-    // other editors: settings, message edits and iframe inputs are not targets.
-    const textarea = document.getElementById('send_textarea');
+    // Remember only chat editors, never arbitrary settings or popup fields.
+    const textarea = lastInsertTarget?.isConnected && lastInsertTarget.getClientRects().length
+        ? lastInsertTarget : document.getElementById('send_textarea');
     if (!textarea || textarea.tagName !== 'TEXTAREA' || textarea.disabled || textarea.readOnly) return;
     const text = textarea.value;
     let start = textarea.selectionStart;
@@ -142,7 +149,17 @@ function clickQuickInsert(button) {
 
 let quickInsertBar;
 let observedSendForm;
+let observedQr;
 const quickInsertObserver = new MutationObserver(() => mountQuickInsertBar());
+const quickInsertResizeObserver = new ResizeObserver(() => syncQuickInsertVisibility());
+
+function syncQuickInsertVisibility() {
+    if (!quickInsertBar) return;
+    const editingMessage = document.activeElement?.matches('#chat .mes textarea.edit_textarea, #chat .mes textarea.reasoning_edit_textarea');
+    // Follow a theme's collapsed QR state without moving our controls into QR.
+    quickInsertBar.hidden = Boolean(observedQr && observedQr.getBoundingClientRect().height < 1 && !editingMessage
+        && !observedSendForm?.matches(':focus-within'));
+}
 
 function mountQuickInsertBar() {
     const form = document.getElementById('send_form');
@@ -153,12 +170,14 @@ function mountQuickInsertBar() {
         observedSendForm = form;
     }
     const qr = form.querySelector('#qr--bar');
-    qr?.classList.toggle('sf-qi-host', Boolean(quickInsertBar));
+    if (observedQr !== qr) {
+        quickInsertResizeObserver.disconnect();
+        observedQr = qr;
+        if (qr) quickInsertResizeObserver.observe(qr);
+    }
     if (!quickInsertBar) return;
-    // Use the real QR container so theme focus/hover/height rules apply naturally.
-    // QR recreates it on settings/chat changes; retain and reattach our own row.
-    const host = qr || form;
-    if (quickInsertBar.parentElement !== host) host.prepend(quickInsertBar);
+    if (quickInsertBar.parentElement !== form) form.prepend(quickInsertBar);
+    syncQuickInsertVisibility();
 }
 
 function renderQuickInsertBar() {

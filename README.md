@@ -8,7 +8,7 @@
 - Добавление выбранных промптов в контекст, настройка глубины и автоматическое снятие выбора после ответа.
 - Папки напоминаний: постоянно, каждые N ответов или по ключевым словам; роли, привязка к чату и изображения.
 - Кнопки вставок горизонтально по центру, с полными названиями и переносом ряда при нехватке места.
-- Вставка **только в поле сообщения `#send_textarea`**, даже после работы в настройках, другом меню или редакторе сообщения.
+- Вставка по курсору в последнее выбранное поле чата: ввод нового сообщения или редактор существующего сообщения (включая reasoning). Поля настроек не перехватывают вставку; после закрытия редактора используется поле отправки.
 - Вставка на курсоре с заменой выделения, в начале/конце текущей строки или с новой строки.
 - Настройка положения курсора внутри вставленного текста.
 - Редактор многострочных шаблонов, включение отдельных кнопок, сортировка перетаскиванием или стрелками.
@@ -36,9 +36,9 @@ https://github.com/Nufahi/storyforge
 
 ## Совместимость с темами
 
-Панель находится **отдельным рядом внутри `#qr--bar`**. Поэтому темы вроде Crème Brûlée · Magenta, скрывающие QR-панель и раскрывающие её через `#send_form:focus-within`, управляют и вставками StoryForge. При пересоздании QR-панели вставки автоматически возвращаются в неё. Если встроенная QR-панель отключена или вынесена в отдельное окно, вставки располагаются внутри формы над полем сообщения.
+Панель находится **отдельным рядом внутри формы отправки**, перед QR и полем сообщения. Она следует сворачиванию QR-панели в темах вроде Crème Brûlée · Magenta, но остаётся доступной при фокусе в редакторе сообщения. Без встроенной QR-панели вставки также доступны.
 
-Кнопки используют стандартный класс SillyTavern `menu_button`, цвета берутся из текущей темы. Расширение добавляет перенос рядов контейнеру QR, сохраняя его правила скрытия, высоту и оформление. Для настройки отступов доступны `--sf-qi-gap` и `--sf-qi-padding` на `.sf-qi-bar`.
+Кнопки используют цвета текущей темы, но их размеры зафиксированы: шрифт 16 px, строка 20 px, отступы 3×7 px, минимальная высота 28 px. Длинные названия переносятся. Размеры защищены от увеличения общими стилями темы. Для настройки промежутков панели доступны `--sf-qi-gap` и `--sf-qi-padding` на `.sf-qi-bar`.
 
 ## Совместимость сохранённых настроек
 
@@ -50,7 +50,7 @@ https://github.com/Nufahi/storyforge
 
 StoryForge combines narrative prompts, reminder folders and Quick Inserts in one menu. Existing prompts and reminders are restored automatically from saved settings. Open StoryForge from Extensions, the extension menu, or `/storyforge`.
 
-Insert buttons are centered in horizontal wrapping rows with full labels. They always target `#send_textarea`. The toolbar sits inside the native QR bar, following the theme's collapse/expand rules, and falls back to the send form when QR is disabled or popped out. It uses native `menu_button` styling. Only Plot Threads, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
+Insert buttons use compact fixed metrics (16 px text, 28 px minimum height), centered wrapping rows and full labels. They insert at the cursor in the last focused chat composer or message editor, ignoring settings fields. The toolbar is a separate row inside the send form and follows QR collapse while remaining available when editing a message. Only Plot Threads, Director Mode and Choice Cards have been removed. Reload SillyTavern after updating.
 
 ## Проверка
 

@@ -54,6 +54,7 @@ body {margin:0; padding:0; height:100vh; overflow:auto; font-family:Arial;}
 </style></head><body>''' + template + '''
 <main id="fixture"><div id="extensionsMenu"></div><div id="extensions_settings2"></div>
 <input id="other" value="menu text"><textarea id="message-editor">message text</textarea>
+<div id="chat"><div class="mes"><textarea id="curEditTextarea" class="edit_textarea">chat text</textarea></div></div>
 <div id="form_sheld"><form id="send_form">
 <div id="qr--bar" class="flex-container flexGap5"><div class="qr--buttons"><button type="button" class="qr--button">Quick Reply</button></div></div>
 <div id="nonQRFormItems"><textarea id="send_textarea" placeholder="Message"></textarea><button type="button" id="send_but">Send</button></div>
@@ -109,7 +110,7 @@ try:
             'sf-secretreveal', 'sf-sceneshift', 'sf-timeskip', 'sf-raisestakes'}
         assert page.locator('#storyforge_menu_btn').inner_text().strip() == 'StoryForge'
         assert page.locator('#sf-qi-panel .inline-drawer-header b').inner_text() == 'StoryForge'
-        assert page.locator('#qr--bar > #sf-qi-bar').count() == 1
+        assert page.locator('#send_form > #sf-qi-bar').count() == 1
         assert page.locator('#send_form > #qr--bar').count() == 1
         page.evaluate('events.ready(); events.ready(); events.chat()')
         assert page.locator('#sf-qi-bar').count() == 1
@@ -124,6 +125,16 @@ try:
         assert page.locator('#other').input_value() == 'menu text'
         assert page.locator('#message-editor').input_value() == 'message text'
         assert page.evaluate('inputs') == 4
+        page.locator('#curEditTextarea').fill('edit this text')
+        page.locator('#curEditTextarea').evaluate('el => el.setSelectionRange(5,9)')
+        page.locator('#other').focus()
+        page.locator('[data-qi-id="qi_action"]').click()
+        assert page.locator('#curEditTextarea').input_value() == 'edit ** text'
+        assert page.locator('#curEditTextarea').evaluate('el => el.selectionStart') == 6
+        assert page.locator('#send_textarea').input_value() == 'hello **'
+        page.locator('#curEditTextarea').evaluate('el => el.remove()')
+        page.locator('[data-qi-id="qi_action"]').click()
+        assert page.locator('#send_textarea').input_value() == 'hello ****'
         page.locator('#send_textarea').fill('one\ntwo\nthree')
         page.locator('#send_textarea').evaluate('(el) => el.setSelectionRange(5,5)')
         page.locator('[data-qi-id="qi_ooc"]').click()
@@ -269,7 +280,8 @@ try:
         assert page.evaluate('Object.values(injections).every(item => !item.text)')
         # A theme's generic fixed-size buttons must not turn inserts into a column.
         manager.locator('.sf-qi-close').click()
-        page.add_style_tag(content='.menu_button { width:100%; height:24px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }')
+        page.add_style_tag(content='.menu_button { font-size:48px !important; padding:30px !important; min-height:100px !important; min-width:100px !important; width:100%; height:24px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }')
+        assert page.locator('.sf-qi-btn').first.evaluate('el => getComputedStyle(el).fontSize === "16px" && el.getBoundingClientRect().height === 28')
         assert page.locator('#sf-qi-bar').evaluate('''bar => {
             const buttons = [...bar.children];
             return buttons[0].getBoundingClientRect().top === buttons[1].getBoundingClientRect().top
@@ -337,6 +349,21 @@ try:
         assert page.locator('#qr--bar').evaluate('el => el.getBoundingClientRect().height > 1')
         page.keyboard.press('Enter')
         assert page.locator('#send_textarea').evaluate('el => el === document.activeElement')
+        page.evaluate('''() => {
+            document.querySelector('#curEditTextarea')?.remove();
+            const editor = document.createElement('textarea');
+            editor.id = 'curEditTextarea'; editor.className = 'edit_textarea';
+            document.querySelector('#chat .mes').append(editor);
+        }''')
+        page.locator('#curEditTextarea').fill('before after')
+        page.locator('#curEditTextarea').evaluate('el => el.setSelectionRange(7,7)')
+        page.wait_for_function('document.querySelector("#qr--bar").getBoundingClientRect().height < 1')
+        page.wait_for_selector('#sf-qi-bar')
+        page.locator('.sf-qi-btn').first.tap()
+        assert page.locator('#curEditTextarea').input_value() != 'before after'
+        assert page.locator('#curEditTextarea').evaluate('el => el === document.activeElement')
+        page.locator('#curEditTextarea').evaluate('el => el.remove()')
+        page.locator('#send_textarea').focus()
         # Refresh / disable / popout / re-enable QR without losing buttons or listeners.
         page.evaluate('''() => {
             window.oldQr = document.querySelector('#qr--bar');
@@ -344,18 +371,18 @@ try:
             replacement.append(qrButton.parentElement);
             oldQr.replaceWith(replacement);
         }''')
-        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        page.wait_for_selector('#send_form > #sf-qi-bar')
         assert page.locator('#sf-qi-bar').count() == 1
         assert page.locator('#qr--bar .qr--button').evaluate('el => el === qrButton')
         page.evaluate('document.querySelector("#qr--bar").remove()')
         page.wait_for_selector('#send_form > #sf-qi-bar')
-        page.evaluate('document.querySelector("#send_form").prepend(oldQr)')
-        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        page.evaluate('oldQr.append(qrButton.parentElement); document.querySelector("#send_form").prepend(oldQr)')
+        page.wait_for_selector('#send_form > #sf-qi-bar')
         page.evaluate('ctx.extensionSettings.storyforge.qiBarVisible = false; events.chat()')
         assert page.locator('#sf-qi-bar').count() == 0
         assert page.locator('#qr--bar.sf-qi-host').count() == 0
         page.evaluate('ctx.extensionSettings.storyforge.qiBarVisible = true; events.chat()')
-        page.wait_for_selector('#qr--bar > #sf-qi-bar')
+        page.wait_for_selector('#send_form > #sf-qi-bar')
         theme_style.evaluate('el => el.remove()')
         page.locator('#other').focus()
         assert page.locator('#qr--bar').evaluate('el => el.getBoundingClientRect().height > 1')

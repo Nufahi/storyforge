@@ -80,7 +80,7 @@
   "qi.editor.cursor.end": "Content end",
   "qi.editor.cursor.custom": "Custom position",
   "qi.section.title": "Quick Inserts",
-  "qi.section.intro": "Text buttons before the send form. Inserts always go into the chat composer, including after typing in another menu. Configure the text, insertion position and cursor placement.",
+  "qi.section.intro": "Insert at the cursor in the last focused chat composer or message editor. Settings fields never receive inserts. Configure the text, insertion position and cursor placement.",
   "qi.bar.visible": "Show Quick Inserts bar",
   "qi.actions.add": "Add",
   "qi.actions.export": "Export",

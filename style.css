@@ -1,13 +1,20 @@
 /* Composer buttons inherit the host theme; no send_form / textarea overrides. */
-/* Keep inserts on their own row inside the theme-controlled QR container. */
-#qr--bar.sf-qi-host { flex-wrap: wrap; }
 .sf-qi-bar {
-    display: flex; flex: 0 0 100%; width: 100%; order: 0; flex-flow: row wrap; align-items: center; justify-content: center;
+    display: flex; flex: 0 0 auto; width: 100%; order: 0; flex-flow: row wrap; align-items: center; justify-content: center;
     align-self: stretch; grid-column: 1 / -1; min-width: 0; box-sizing: border-box;
-    gap: var(--sf-qi-gap, .25em); padding: var(--sf-qi-padding, .25em 0);
+    gap: var(--sf-qi-gap, 4px); padding: var(--sf-qi-padding, 4px 0); font-size: 16px;
     color: var(--SmartThemeBodyColor, inherit);
 }
 .sf-qi-bar .sf-qi-btn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: auto; min-width: 0; max-width: 100%; height: auto; max-height: none; margin: 0; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; white-space: normal; text-align: center; }
+/* Deliberately fixed metrics: sendbar themes often enlarge every menu_button. */
+#sf-qi-bar .sf-qi-btn {
+    font-size: 16px !important; line-height: 20px !important;
+    padding: 3px 7px !important; margin: 0 !important;
+    width: auto !important; min-width: 28px !important; max-width: 100% !important;
+    height: auto !important; min-height: 28px !important; max-height: none !important;
+    letter-spacing: normal !important; box-sizing: border-box;
+}
+.sf-qi-bar[hidden] { display: none; }
 
 /* Rounded, theme-aware panels like PinClothes / QuickPanel.
  * Native Popup handles focus, Escape, stacking and lifecycle. */
@@ -105,7 +112,6 @@
     .sf-qi-dialog .sf-qi-control:not(:disabled):hover { background: var(--sf-qi-soft); border-color: var(--sf-qi-accent); }
 }
 @media (pointer: coarse) {
-    .sf-qi-bar .sf-qi-btn { min-height: 2.75em; min-width: 2.75em; }
     .sf-qi-dialog .sf-qi-control { min-height: 44px; }
     .sf-qi-dialog .sf-qi-row-action { flex-basis: 44px; width: 44px; }
 }
